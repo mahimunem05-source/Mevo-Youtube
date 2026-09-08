@@ -1,0 +1,1323 @@
+@import "tailwindcss";
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * MEVO — dark-only premium design system.
+ * All colors are oklch semantic tokens. Never hardcode colors in components.
+ */
+
+html {
+  -webkit-tap-highlight-color: transparent;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto !important;
+  touch-action: auto !important;
+}
+
+body {
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto !important;
+  touch-action: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+#root {
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: visible;
+  touch-action: auto !important;
+}
+
+.overflow-y-auto,
+.overflow-x-auto,
+.overflow-auto,
+[data-scroll-container] {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Zero-delay fast taps across mobile browsers */
+button,
+[role="button"],
+a,
+input,
+select,
+textarea,
+.touch-manipulate {
+  touch-action: manipulation;
+}
+
+/* Global GPU layer promotion for hardware-accelerated 60fps rendering */
+.gpu-layer,
+.carousel-track,
+.carousel-item,
+[data-mobile-gpu] {
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+@theme {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Sora", "Manrope", ui-sans-serif, sans-serif;
+  --animate-eq: eq 1s ease-in-out infinite;
+  --animate-float: float 7s ease-in-out infinite;
+  --animate-spin-slow: spin 18s linear infinite;
+  --animate-glow-pulse: glow-pulse 3.5s ease-in-out infinite;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-chick-groove: chick-bounce-groove 1.4s ease-in-out infinite;
+  --animate-chick-pulse: chick-bounce-pulse 0.8s ease-in-out infinite;
+  --animate-chick-chill: chick-bounce-chill 2.2s ease-in-out infinite;
+  --animate-chick-idle: chick-idle-float 3.5s ease-in-out infinite;
+}
+
+@keyframes eq {
+  0%,
+  100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-18px);
+  }
+}
+@keyframes glow-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* --- BEAT CHICK PHYSICAL CHARACTER DANCE (Foot Pivot, Squash/Stretch, Hip Sway, Wing Momentum) --- */
+@keyframes chick-physical-groove {
+  0%,
+  100% {
+    /* Beat 1: Downbeat dip on standing foot (compression / squash) */
+    transform: translate3d(0, 4px, 0) rotate(-2deg) scale(1.04, 0.94) skewX(-2deg);
+  }
+  12.5% {
+    /* Beat 1.5: Foot push-off & upward kick spring (stretch) */
+    transform: translate3d(-3px, -10px, 0) rotate(4.5deg) scale(0.96, 1.05) skewX(3deg);
+  }
+  25% {
+    /* Beat 2: Mid-air float & wing extension */
+    transform: translate3d(-2px, -7px, 0) rotate(2deg) scale(0.99, 1.02) skewX(1deg);
+  }
+  37.5% {
+    /* Beat 2.5: Landing foot-tap & rhythmic compression */
+    transform: translate3d(3px, 5px, 0) rotate(-4deg) scale(1.05, 0.93) skewX(-3deg);
+  }
+  50% {
+    /* Beat 3: Weight shift to right with hip sway */
+    transform: translate3d(5px, -1px, 0) rotate(-2.5deg) scale(1.01, 0.99) skewX(-1.5deg);
+  }
+  62.5% {
+    /* Beat 3.5: Dynamic high-step bounce & head bob */
+    transform: translate3d(2px, -11px, 0) rotate(4deg) scale(0.95, 1.06) skewX(3.5deg);
+  }
+  75% {
+    /* Beat 4: High pose & wing flap momentum */
+    transform: translate3d(-2px, -6px, 0) rotate(-1.5deg) scale(0.98, 1.02) skewX(-1deg);
+  }
+  87.5% {
+    /* Beat 4.5: Smooth transition & wind-up */
+    transform: translate3d(1px, 2px, 0) rotate(-3deg) scale(1.03, 0.96) skewX(-2deg);
+  }
+}
+
+@keyframes chick-physical-pulse {
+  0%,
+  100% {
+    /* Fast 2-step electronic bounce & foot dips */
+    transform: translate3d(0, 5px, 0) rotate(0deg) scale(1.06, 0.93);
+  }
+  25% {
+    transform: translate3d(-3px, -9px, 0) rotate(3.5deg) scale(0.95, 1.05) skewX(2deg);
+  }
+  50% {
+    transform: translate3d(1px, 3px, 0) rotate(-1.5deg) scale(1.04, 0.95);
+  }
+  75% {
+    transform: translate3d(3px, -10px, 0) rotate(-3.5deg) scale(0.94, 1.06) skewX(-2deg);
+  }
+}
+
+@keyframes chick-physical-chill {
+  0%,
+  100% {
+    /* Relaxed R&B 2-step side sway with head bob */
+    transform: translate3d(0, 2px, 0) rotate(-2.5deg) scale(1.02, 0.97) skewX(-1deg);
+  }
+  25% {
+    transform: translate3d(-3px, -5px, 0) rotate(2deg) scale(0.98, 1.02) skewX(1.5deg);
+  }
+  50% {
+    transform: translate3d(3px, 3px, 0) rotate(3.5deg) scale(1.02, 0.97) skewX(1deg);
+  }
+  75% {
+    transform: translate3d(4px, -4px, 0) rotate(-1deg) scale(0.98, 1.02) skewX(-1.5deg);
+  }
+}
+
+@keyframes chick-physical-idle {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1, 1);
+  }
+  50% {
+    transform: translate3d(0, -2px, 0) rotate(-1deg) scale(1.01, 0.99);
+  }
+}
+
+/* Floor Contact Shadow Dynamics (Expands on foot lands, shrinks on high kicks) */
+@keyframes chick-shadow-groove {
+  0%,
+  100% {
+    transform: scale(1.25, 0.95);
+    opacity: 0.9;
+  }
+  12.5% {
+    transform: scale(0.7, 0.65);
+    opacity: 0.35;
+  }
+  25% {
+    transform: scale(0.85, 0.75);
+    opacity: 0.45;
+  }
+  37.5% {
+    transform: scale(1.3, 1);
+    opacity: 0.95;
+  }
+  50% {
+    transform: scale(1.05, 0.85);
+    opacity: 0.7;
+  }
+  62.5% {
+    transform: scale(0.65, 0.6);
+    opacity: 0.3;
+  }
+  75% {
+    transform: scale(0.85, 0.75);
+    opacity: 0.45;
+  }
+  87.5% {
+    transform: scale(1.15, 0.9);
+    opacity: 0.8;
+  }
+}
+
+/* --- HUMAN CARTOON DANCER MULTI-LIMB CHOREOGRAPHY --- */
+@keyframes human-dancer-body {
+  0%,
+  100% {
+    /* Downbeat: slight squat, hip dip left */
+    transform: translate3d(-3px, 3px, 0) rotate(-1.5deg) scale(1.02, 0.98);
+  }
+  12.5% {
+    /* Push-off & step */
+    transform: translate3d(-1px, -7px, 0) rotate(1.5deg) scale(0.98, 1.03);
+  }
+  25% {
+    /* Mid-air step peak */
+    transform: translate3d(2px, -9px, 0) rotate(3deg) scale(0.97, 1.04);
+  }
+  37.5% {
+    /* Land right foot, hip compression */
+    transform: translate3d(4px, 4px, 0) rotate(2deg) scale(1.03, 0.97);
+  }
+  50% {
+    /* Hip sway right */
+    transform: translate3d(2px, 0px, 0) rotate(0.5deg) scale(1, 1);
+  }
+  62.5% {
+    /* Push-off left kick */
+    transform: translate3d(-2px, -8px, 0) rotate(-3deg) scale(0.97, 1.04);
+  }
+  75% {
+    /* Peak left step */
+    transform: translate3d(-4px, -6px, 0) rotate(-2deg) scale(0.99, 1.02);
+  }
+  87.5% {
+    /* Settle and wind-up */
+    transform: translate3d(-1px, 2px, 0) rotate(-1deg) scale(1.02, 0.98);
+  }
+}
+
+@keyframes human-head-groove {
+  0%,
+  100% {
+    transform: rotate(-4deg) translate3d(0, 1px, 0);
+  }
+  25% {
+    transform: rotate(5deg) translate3d(1px, -2px, 0);
+  }
+  50% {
+    transform: rotate(-2deg) translate3d(0, 2px, 0);
+  }
+  75% {
+    transform: rotate(4deg) translate3d(-1px, -3px, 0);
+  }
+}
+
+@keyframes human-arm-left {
+  0%,
+  100% {
+    transform: rotate(-24deg);
+  }
+  25% {
+    transform: rotate(18deg);
+  }
+  50% {
+    transform: rotate(-10deg);
+  }
+  75% {
+    transform: rotate(28deg);
+  }
+}
+
+@keyframes human-arm-right {
+  0%,
+  100% {
+    transform: rotate(26deg);
+  }
+  25% {
+    transform: rotate(-14deg);
+  }
+  50% {
+    transform: rotate(16deg);
+  }
+  75% {
+    transform: rotate(-22deg);
+  }
+}
+
+@keyframes human-leg-left {
+  0%,
+  100% {
+    transform: rotate(0deg) translate3d(0, 0, 0);
+  }
+  25% {
+    transform: rotate(-12deg) translate3d(-4px, -6px, 0);
+  }
+  50% {
+    transform: rotate(4deg) translate3d(2px, 1px, 0);
+  }
+  75% {
+    transform: rotate(-6deg) translate3d(-2px, -3px, 0);
+  }
+}
+
+@keyframes human-leg-right {
+  0%,
+  100% {
+    transform: rotate(0deg) translate3d(0, 0, 0);
+  }
+  25% {
+    transform: rotate(6deg) translate3d(2px, 1px, 0);
+  }
+  50% {
+    transform: rotate(-14deg) translate3d(4px, -6px, 0);
+  }
+  75% {
+    transform: rotate(8deg) translate3d(2px, -2px, 0);
+  }
+}
+
+.animate-human-body {
+  animation: human-dancer-body 1.6s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  transform-origin: 50% 90%;
+  will-change: transform;
+}
+.animate-human-head {
+  animation: human-head-groove 1.6s ease-in-out infinite;
+  transform-origin: 50% 80%;
+  will-change: transform;
+}
+.animate-human-arm-left {
+  animation: human-arm-left 1.6s ease-in-out infinite;
+  transform-origin: 25% 15%;
+  will-change: transform;
+}
+.animate-human-arm-right {
+  animation: human-arm-right 1.6s ease-in-out infinite;
+  transform-origin: 75% 15%;
+  will-change: transform;
+}
+.animate-human-leg-left {
+  animation: human-leg-left 1.6s ease-in-out infinite;
+  transform-origin: 40% 10%;
+  will-change: transform;
+}
+.animate-human-leg-right {
+  animation: human-leg-right 1.6s ease-in-out infinite;
+  transform-origin: 60% 10%;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-human-body,
+  .animate-human-head,
+  .animate-human-arm-left,
+  .animate-human-arm-right,
+  .animate-human-leg-left,
+  .animate-human-leg-right,
+  .animate-chick-groove,
+  .animate-chick-pulse,
+  .animate-chick-chill,
+  .animate-chick-idle,
+  .animate-shadow-groove,
+  .animate-shadow-pulse,
+  .animate-shadow-chill,
+  .animate-eq-1,
+  .animate-eq-2,
+  .animate-eq-3,
+  .animate-eq-4,
+  .animate-eq-5,
+  .animate-particle-left,
+  .animate-particle-right,
+  .animate-particle-center {
+    animation: none !important;
+    transform: none !important;
+  }
+}
+
+/* --- MOBILE HIGH-PERFORMANCE GLASS & GLOW OPTIMIZATIONS (<768px) --- */
+@media (max-width: 768px) {
+  /* Optimize heavy GPU-taxing backdrop-filters on mobile viewports for 60fps scrolling */
+  .glass {
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    background-color: rgba(18, 25, 29, 0.94) !important;
+  }
+  .glass-strong {
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    background-color: rgba(15, 21, 25, 0.97) !important;
+  }
+  .glass-row {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background-color: rgba(24, 34, 39, 0.88) !important;
+  }
+  .glass-row-active {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background-color: rgba(79, 209, 197, 0.16) !important;
+  }
+  .backdrop-blur-xl,
+  .backdrop-blur-2xl,
+  .backdrop-blur-3xl {
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+  }
+
+  /* Simplify heavy multi-layer drop shadows on mobile to reduce GPU fillrate bottlenecks */
+  .mevo-breathing-glow,
+  .mevo-premium-glow {
+    filter: drop-shadow(0 0 2px rgba(24, 231, 211, 0.45)) !important;
+  }
+}
+
+/*
+ * Design system definition.
+ *
+ * The @theme inline block maps CSS custom properties to Tailwind utility
+ * classes (e.g. --color-primary -> bg-primary, text-primary).
+ *
+ * The :root and .dark blocks define the actual color values using oklch.
+ * All colors MUST use oklch format.
+ *
+ * To add a new semantic color:
+ * 1. Add the variable to :root (light value) and .dark (dark value)
+ * 2. Register it in @theme inline as --color-<name>: var(--<name>)
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 1.5rem;
+  /* #0B1012 — soft slate dark background */
+  --background: oklch(0.135 0.015 210);
+  --foreground: oklch(0.97 0.005 210);
+  /* Cards: #182227 card surface */
+  --card: oklch(0.2 0.02 210 / 95%);
+  --card-foreground: oklch(0.97 0.005 210);
+  --popover: oklch(0.2 0.02 210 / 98%);
+  --popover-foreground: oklch(0.97 0.005 210);
+  /* MEVO Soft Slate Teal brand (#4FD1C5) */
+  --primary: oklch(0.79 0.12 188);
+  --primary-foreground: oklch(0.08 0.015 210);
+  --primary-glow: oklch(0.79 0.12 188 / 40%);
+  --secondary: oklch(0.165 0.018 210);
+  --secondary-foreground: oklch(0.97 0.005 210);
+  --muted: oklch(0.18 0.018 210);
+  --muted-foreground: oklch(0.68 0.02 210);
+  --accent: oklch(0.22 0.02 210);
+  --accent-foreground: oklch(0.97 0.005 210);
+  --gold: oklch(0.83 0.14 88);
+  --gold-glow: oklch(0.9 0.12 92);
+  --destructive: oklch(0.62 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.25 0.02 210 / 70%);
+  --input: oklch(0.25 0.02 210 / 80%);
+  --ring: oklch(0.79 0.12 188);
+  --chart-1: oklch(0.79 0.12 188);
+  --chart-2: oklch(0.83 0.14 88);
+  --chart-3: oklch(0.6 0.118 184.704);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.14 0.016 210);
+  --sidebar-foreground: oklch(0.97 0.005 210);
+  --sidebar-primary: oklch(0.79 0.12 188);
+  --sidebar-primary-foreground: oklch(0.08 0.015 210);
+  --sidebar-accent: oklch(0.165 0.018 210);
+  --sidebar-accent-foreground: oklch(0.97 0.005 210);
+  --sidebar-border: oklch(0.25 0.02 210 / 70%);
+  --sidebar-ring: oklch(0.79 0.12 188);
+
+  --cyan-glow: oklch(0.79 0.12 188);
+  --lime-glow: oklch(0.82 0.14 175);
+  /* Glass surfaces: slate teal translucent */
+  --glass-bg: oklch(0.2 0.02 210 / 75%);
+  --glass-border: oklch(0.25 0.02 210 / 60%);
+  --gradient-glass: linear-gradient(
+    160deg,
+    oklch(1 0 0 / 5%),
+    oklch(1 0 0 / 2%) 45%,
+    oklch(0.79 0.12 188 / 6%)
+  );
+  --gradient-aurora: radial-gradient(
+    ellipse at top left,
+    oklch(0.79 0.12 188 / 15%) 0%,
+    transparent 65%
+  );
+  --shadow-soft: 0 4px 16px oklch(0 0 0 / 45%), inset 0 1px 0 oklch(1 0 0 / 5%);
+  --shadow-lift: 0 10px 30px oklch(0 0 0 / 65%), inset 0 1px 0 oklch(1 0 0 / 8%);
+  --shadow-glow: 0 4px 20px oklch(0.79 0.12 188 / 25%);
+  --ease-premium: cubic-bezier(0.2, 0, 0, 1);
+  --shadow-gold: 0 4px 20px oklch(0 0 0 / 40%);
+  --gradient-hero: radial-gradient(60% 70% at 70% 20%, oklch(0.2 0.03 210 / 40%), transparent 70%);
+}
+
+/* --- THEME DEFINITIONS --- */
+
+/* 1. DARK EMERALD (DEFAULT) — defined in :root above */
+
+/* 2. PURE DARK / MIDNIGHT THEME */
+[data-theme="midnight"],
+.midnight {
+  color-scheme: dark;
+  --background: oklch(0.08 0 0);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.12 0 0 / 95%);
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.12 0 0 / 98%);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.85 0.02 250);
+  --primary-foreground: oklch(0.08 0 0);
+  --primary-glow: oklch(0.85 0.02 250 / 30%);
+  --secondary: oklch(0.15 0 0);
+  --secondary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.15 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.18 0 0);
+  --accent-foreground: oklch(0.98 0 0);
+  --border: oklch(0.22 0 0 / 70%);
+  --input: oklch(0.22 0 0 / 80%);
+  --ring: oklch(0.85 0.02 250);
+  --glass-bg: oklch(0.12 0 0 / 80%);
+  --glass-border: oklch(0.22 0 0 / 60%);
+  --gradient-glass: linear-gradient(
+    160deg,
+    oklch(1 0 0 / 4%),
+    oklch(1 0 0 / 1%) 45%,
+    oklch(1 0 0 / 3%)
+  );
+  --gradient-aurora: radial-gradient(ellipse at top left, oklch(1 0 0 / 8%) 0%, transparent 65%);
+}
+
+/* 3. BRIGHT / LIGHT THEME */
+[data-theme="light"],
+.light {
+  color-scheme: light;
+  --background: oklch(0.975 0.005 240);
+  --foreground: oklch(0.15 0.03 260);
+  --card: oklch(1 0 0 / 95%);
+  --card-foreground: oklch(0.15 0.03 260);
+  --popover: oklch(1 0 0 / 98%);
+  --popover-foreground: oklch(0.15 0.03 260);
+  --primary: oklch(0.55 0.15 175);
+  --primary-foreground: oklch(0.99 0 0);
+  --primary-glow: oklch(0.55 0.15 175 / 35%);
+  --secondary: oklch(0.93 0.01 240);
+  --secondary-foreground: oklch(0.15 0.03 260);
+  --muted: oklch(0.92 0.01 240);
+  --muted-foreground: oklch(0.45 0.02 260);
+  --accent: oklch(0.9 0.015 240);
+  --accent-foreground: oklch(0.15 0.03 260);
+  --border: oklch(0.88 0.01 240 / 80%);
+  --input: oklch(0.88 0.01 240 / 80%);
+  --ring: oklch(0.55 0.15 175);
+  --glass-bg: oklch(1 0 0 / 85%);
+  --glass-border: oklch(0.85 0.01 240 / 60%);
+  --gradient-glass: linear-gradient(
+    160deg,
+    oklch(0 0 0 / 2%),
+    oklch(0 0 0 / 0.5%) 45%,
+    oklch(0.55 0.15 175 / 5%)
+  );
+  --gradient-aurora: radial-gradient(
+    ellipse at top left,
+    oklch(0.55 0.15 175 / 12%) 0%,
+    transparent 65%
+  );
+  --shadow-soft: 0 4px 16px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --shadow-lift: 0 10px 30px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Light theme comprehensive overrides for surfaces, text, and glass */
+[data-theme="light"] {
+  /* Card surfaces and dark containers adapt smoothly to crisp clean white with subtle borders */
+  .bg-\[\#182227\],
+  .bg-\[\#12191D\],
+  .bg-\[\#12191D\]\/90,
+  .bg-\[\#12191D\]\/95,
+  .bg-\[\#161A1D\],
+  .bg-\[\#0B1012\],
+  .bg-\[\#0d1617\],
+  .bg-\[\#080A0C\],
+  .bg-\[\#040506\] {
+    background-color: rgba(255, 255, 255, 0.92) !important;
+    border-color: rgba(226, 232, 240, 0.9) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04) !important;
+  }
+
+  /* Protect HeroBanner and always-white elements from light mode color inversion */
+  .text-white:not([data-hero-banner] *):not(.text-always-white):not([data-always-white]) {
+    color: #0f172a !important; /* slate-900 */
+  }
+  .text-white\/90:not([data-hero-banner] *):not(.text-always-white):not([data-always-white]) {
+    color: rgba(15, 23, 42, 0.9) !important;
+  }
+  .text-white\/80:not([data-hero-banner] *):not(.text-always-white):not([data-always-white]) {
+    color: rgba(15, 23, 42, 0.8) !important;
+  }
+  .text-white\/70:not([data-hero-banner] *):not(.text-always-white):not([data-always-white]) {
+    color: #475569 !important; /* slate-600 */
+  }
+  .text-white\/60:not([data-hero-banner] *):not(.text-always-white):not([data-always-white]),
+  .text-white\/50:not([data-hero-banner] *):not(.text-always-white):not([data-always-white]),
+  .text-white\/40:not([data-hero-banner] *):not(.text-always-white):not([data-always-white]) {
+    color: #64748b !important; /* slate-500 */
+  }
+
+  .border-white\/10,
+  .border-white\/\[0\.08\],
+  .border-white\/\[0\.06\],
+  .border-white\/20,
+  .border-\[\#26343A\] {
+    border-color: rgba(226, 232, 240, 0.85) !important;
+  }
+
+  .bg-white\/\[0\.08\],
+  .bg-white\/\[0\.07\],
+  .bg-white\/\[0\.06\],
+  .bg-white\/\[0\.05\],
+  .bg-white\/\[0\.04\],
+  .bg-white\/10 {
+    background-color: rgba(0, 0, 0, 0.04) !important;
+  }
+
+  .hover\:bg-white\/15:hover,
+  .hover\:bg-white\/10:hover,
+  .hover\:bg-white\/\[0\.06\]:hover,
+  .hover\:bg-white\/\[0\.04\]:hover {
+    background-color: rgba(0, 0, 0, 0.06) !important;
+  }
+
+  .glass {
+    background-color: rgba(255, 255, 255, 0.85) !important;
+    border-color: rgba(203, 213, 225, 0.8) !important;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05) !important;
+  }
+
+  .glass-strong {
+    background-color: rgba(255, 255, 255, 0.95) !important;
+    border-color: rgba(203, 213, 225, 0.9) !important;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.07) !important;
+  }
+
+  .glass-row {
+    background-color: rgba(255, 255, 255, 0.7) !important;
+    border-color: rgba(226, 232, 240, 0.8) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03) !important;
+  }
+  .glass-row:hover {
+    background-color: rgba(255, 255, 255, 0.95) !important;
+    border-color: rgba(13, 148, 136, 0.35) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06) !important;
+  }
+
+  .glass-row-active {
+    background-color: rgba(13, 148, 136, 0.1) !important;
+    border-color: rgba(13, 148, 136, 0.4) !important;
+  }
+}
+
+/* Midnight theme obsidian overrides */
+[data-theme="midnight"] {
+  .bg-\[\#182227\],
+  .bg-\[\#12191D\],
+  .bg-\[\#12191D\]\/90,
+  .bg-\[\#12191D\]\/95,
+  .bg-\[\#161A1D\],
+  .bg-\[\#0B1012\],
+  .bg-\[\#0d1617\],
+  .bg-\[\#080A0C\],
+  .bg-\[\#040506\] {
+    background-color: #0c0c0e !important;
+    border-color: rgba(255, 255, 255, 0.08) !important;
+  }
+
+  .border-\[\#4FD1C5\]\/30,
+  .border-\[\#4FD1C5\]\/40,
+  .border-\[\#4FD1C5\]\/50 {
+    border-color: rgba(244, 244, 245, 0.25) !important;
+  }
+
+  .glass {
+    background-color: rgba(12, 12, 14, 0.85) !important;
+    border-color: rgba(255, 255, 255, 0.08) !important;
+  }
+
+  .glass-strong {
+    background-color: rgba(12, 12, 14, 0.95) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+  }
+}
+
+@theme inline {
+  --color-primary-glow: var(--primary-glow);
+  --color-gold: var(--gold);
+  --color-gold-glow: var(--gold-glow);
+}
+
+:root {
+  --storm-reflection: 0;
+}
+
+@utility glass {
+  background-color: oklch(0.16 0.01 170 / 75%);
+  border: 1px solid rgba(79, 209, 197, calc(0.08 + var(--storm-reflection, 0) * 0.35));
+  backdrop-filter: blur(16px);
+  box-shadow:
+    var(--shadow-soft),
+    inset 0 1px 1px rgba(255, 255, 255, calc(0.05 + var(--storm-reflection, 0) * 0.2)),
+    0 0 24px rgba(79, 209, 197, calc(var(--storm-reflection, 0) * 0.25));
+  transition:
+    transform 0.2s var(--ease-premium),
+    box-shadow 0.3s ease,
+    border-color 0.3s ease;
+  &:hover {
+    border-color: oklch(1 0 0 / 14%);
+  }
+}
+
+@utility btn-aurora {
+  background-image: linear-gradient(
+    135deg,
+    oklch(0.79 0.12 188),
+    oklch(0.82 0.1 195) 55%,
+    oklch(0.75 0.11 205)
+  );
+  color: var(--primary-foreground);
+  box-shadow:
+    0 0 0 1px oklch(0.79 0.12 188 / 38%),
+    0 6px 20px oklch(0.79 0.12 188 / 25%);
+  &:hover {
+    filter: brightness(1.08);
+    box-shadow: var(--shadow-glow);
+  }
+}
+
+@utility glass-strong {
+  background-color: color-mix(in oklab, var(--background) 62%, transparent);
+  background-image: var(--gradient-glass);
+  border: 1px solid rgba(79, 209, 197, calc(0.14 + var(--storm-reflection, 0) * 0.38));
+  backdrop-filter: blur(28px) saturate(160%);
+  box-shadow:
+    var(--shadow-soft),
+    inset 0 1px 1px rgba(255, 255, 255, calc(0.04 + var(--storm-reflection, 0) * 0.22)),
+    0 0 0 1px oklch(0.79 0.12 188 / 8%),
+    0 0 45px -10px rgba(79, 209, 197, calc(0.18 + var(--storm-reflection, 0) * 0.38));
+  transition:
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
+}
+
+/* Lightweight performant row for repeated track lists and queues (zero backdrop-blur overhead) */
+.song-row-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 56px;
+}
+
+@utility glass-row {
+  background-color: rgba(19, 31, 36, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+  &:hover {
+    background-color: rgba(24, 40, 46, 0.9);
+    border-color: rgba(79, 209, 197, 0.25);
+  }
+}
+
+@utility glass-reflection-sync {
+  border-color: rgba(79, 209, 197, 0.3) !important;
+  transition: border-color 0.2s ease !important;
+}
+
+@utility glass-row-active {
+  background-color: rgba(24, 42, 48, 0.95);
+  border: 1px solid rgba(79, 209, 197, 0.45);
+  box-shadow: 0 0 16px -4px rgba(79, 209, 197, 0.25);
+}
+
+@utility text-aurora {
+  background-image: linear-gradient(
+    135deg,
+    oklch(0.79 0.12 188),
+    oklch(0.82 0.1 195) 55%,
+    oklch(0.75 0.11 205)
+  );
+  background-clip: text;
+  color: transparent;
+}
+
+@utility glow-ring {
+  box-shadow: var(--shadow-glow);
+}
+
+@utility gold-ring {
+  box-shadow: var(--shadow-gold);
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
+  }
+}
+
+/*
+ * carousel-track — stable horizontal scroll container.
+ * Locks overflow to X-axis only, uses GPU compositing,
+ * and prevents ANY vertical movement or layout shift.
+ */
+@utility carousel-track {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  will-change: scroll-position;
+}
+
+/*
+ * carousel-item — each card wrapper.
+ * Prevents the child motion.article from ever shifting
+ * the row height via transform or scale.
+ */
+@utility carousel-item {
+  flex-shrink: 0;
+  scroll-snap-align: start;
+  /* Isolate each card's stacking context so scale/opacity
+     animations don't affect siblings or the scroll track */
+  isolation: isolate;
+  will-change: transform;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    font-family: var(--font-sans);
+  }
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+  }
+  ::selection {
+    background: var(--primary);
+    color: var(--primary-foreground);
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--primary) 40%, transparent);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--primary);
+  }
+}
+
+/* ---------- AURA cinematic skin ---------- */
+
+@theme inline {
+  --color-cyan-glow: var(--cyan-glow);
+  --color-lime-glow: var(--lime-glow);
+}
+
+@layer base {
+  h1,
+  h2,
+  h3,
+  .font-display {
+    letter-spacing: -0.015em;
+    font-weight: 700;
+  }
+
+  p,
+  span,
+  li {
+    font-weight: 400;
+  }
+}
+
+/* subtle accent icons, badges and equalizer bars */
+.text-primary > svg,
+svg.text-primary,
+.text-gold > svg,
+svg.text-gold {
+  filter: none;
+}
+
+svg.text-gold,
+.text-gold > svg {
+  filter: none;
+}
+
+.bg-primary {
+  box-shadow: none;
+}
+
+/* Brand wordmark */
+@utility brand-wordmark {
+  color: var(--primary);
+  filter: none;
+}
+
+/* ---------- homepage background system — ported 1:1 from Emerald Aura's
+   AmbientBackground component. This is the ONLY background layer; Mahi
+   Music's previous body::before aurora pseudo-element and its separate
+   orb/fog/particle/vignette/noise system have been removed so nothing
+   stacks on top of this. ---------- */
+
+@utility aurora-bg {
+  background-image: var(--gradient-aurora);
+  filter: blur(40px);
+  will-change: transform, opacity;
+  animation: aurora-drift 24s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-3%, -2%, 0) scale(1.05);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate3d(3%, 2%, 0) scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(-2%, 3%, 0) scale(1.08);
+    opacity: 0.9;
+  }
+}
+
+@utility noise-layer {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  opacity: 0.045;
+  mix-blend-mode: overlay;
+}
+
+@keyframes particle-rise {
+  0% {
+    transform: translate3d(0, 0, 0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate3d(-20px, -320px, 0);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-bg {
+    animation: none;
+  }
+}
+
+/* ---------- premium micro-interactions ---------- */
+
+/* mouse-follow glow + animated border glow on cards */
+/* Clean card styling matching reference design */
+@utility card-aurora {
+  position: relative;
+  transition:
+    transform 0.2s var(--ease-premium),
+    box-shadow 0.2s var(--ease-premium),
+    border-color 0.2s var(--ease-premium);
+  &:active {
+    transform: scale(0.98);
+  }
+}
+
+/* navbar pill hover glow */
+@utility nav-pill {
+  position: relative;
+  &:hover {
+    background-color: oklch(0.79 0.12 188 / 10%);
+    box-shadow: 0 0 18px -6px oklch(0.79 0.12 188 / 45%);
+  }
+}
+
+/* logo icon breathing glow */
+@utility logo-orb {
+  background-image: linear-gradient(
+    135deg,
+    oklch(0.79 0.12 188),
+    oklch(0.82 0.1 195) 55%,
+    oklch(0.75 0.11 205)
+  );
+  box-shadow:
+    0 0 0 1px oklch(0.79 0.12 188 / 40%),
+    0 0 22px oklch(0.79 0.12 188 / 45%),
+    0 0 54px oklch(0.75 0.11 205 / 25%);
+  animation: glow-pulse 3.5s ease-in-out infinite;
+}
+
+@utility search-glass {
+  transition:
+    box-shadow 0.4s var(--ease-premium),
+    border-color 0.4s var(--ease-premium);
+  & svg {
+    filter: drop-shadow(0 0 8px oklch(0.79 0.12 188 / 50%));
+  }
+  &:focus-within {
+    border-color: oklch(0.79 0.12 188 / 45%);
+  }
+}
+
+/* secondary hero button */
+@utility btn-ghost-aurora {
+  &:hover {
+    border-color: oklch(0.79 0.12 188 / 45%);
+    box-shadow:
+      0 0 0 1px oklch(0.79 0.12 188 / 30%),
+      0 0 32px -8px oklch(0.79 0.12 188 / 45%);
+  }
+  &:active {
+    filter: brightness(0.95);
+  }
+}
+
+/* premium loading shimmer */
+@utility shimmer-line {
+  background-image: linear-gradient(
+    90deg,
+    oklch(1 0 0 / 4%),
+    oklch(0.79 0.12 188 / 18%),
+    oklch(1 0 0 / 4%)
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* magnetic hover + click ripple for buttons */
+@utility magnetic {
+  transition: transform 0.2s var(--ease-premium);
+  &:active {
+    transform: scale(0.98);
+  }
+}
+
+@utility bloom-icon {
+  filter: none;
+}
+
+@utility spin-vinyl {
+  animation: spin-slow 18s linear infinite;
+  will-change: transform;
+}
+
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@utility float-slow {
+  animation: float-y 9s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes float-y {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -16px, 0);
+  }
+}
+
+@keyframes float-note {
+  0% {
+    transform: translate3d(0, 20px, 0) rotate(-8deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translate3d(24px, -180px, 0) rotate(14deg);
+    opacity: 0;
+  }
+}
+
+@utility glow-soft {
+  box-shadow: 0 4px 16px oklch(0 0 0 / 40%);
+}
+
+/* =====================================================================
+   BOTTOM MINI PLAYER — active play button ring pulse
+   ===================================================================== */
+@keyframes player-ring-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(79, 209, 197, 0.38);
+    opacity: 1;
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(79, 209, 197, 0);
+    opacity: 0;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(79, 209, 197, 0);
+    opacity: 0;
+  }
+}
+
+/* =====================================================================
+   MEVO BRAND LOGO — STANDARDIZED PREMIUM STATIC GLOW
+   Same treatment on every header, drawer, and footer logo.
+   ===================================================================== */
+.mevo-breathing-glow,
+.mevo-premium-glow {
+  color: #18e7d3;
+  filter: drop-shadow(0 0 1px rgba(24, 231, 211, 0.55)) drop-shadow(0 0 3px rgba(24, 231, 211, 0.2));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo-orb,
+  .card-aurora::after {
+    animation: none !important;
+  }
+  .breathing,
+  .spin-vinyl,
+  .float-slow,
+  .bloom-icon {
+    animation: none !important;
+  }
+  .magnetic {
+    transition: none;
+  }
+}
+
+/* =====================================================================
+   MOBILE RESPONSIVENESS — global helpers
+   Only targeted at narrow viewports (max 767px).
+   Desktop design (768px+) is completely untouched.
+   ===================================================================== */
+
+/* Horizontal scrollers: momentum scroll on iOS/Android */
+@layer base {
+  [data-scroll-restore-id] {
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x mandatory;
+  }
+}
+
+/* Prevent any component from causing horizontal page bleed */
+@layer base {
+  html,
+  body {
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+}
+
+/* On touch/coarse-pointer devices: disable heavy card 3D hover transforms
+   that cause layout jank during touch scrolling on Android */
+@media (pointer: coarse) {
+  .card-aurora {
+    transform: none !important;
+  }
+
+  /* Keep spin-vinyl / breathing alive (audio feedback), but cut the
+     aurora drift which is expensive on low-end CPUs */
+  .aurora-bg {
+    animation: none;
+  }
+}
+
+/* Safe-area padding for notched phones (iPhone X+, Android cutouts) */
+@layer base {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* Ensure the fixed bottom player clears phone home-indicator bars */
+@utility player-safe-bottom {
+  padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+}
+
+/* Hardware-accelerated horizontal carousel & section row scrolling */
+.carousel-track {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scroll-padding-left: 0.75rem;
+  scroll-padding-right: 0.75rem;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  will-change: scroll-position;
+}
+
+.carousel-item {
+  scroll-snap-align: start;
+  scroll-snap-stop: normal;
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Reduce Motion overrides */
+.reduce-motion,
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+
+.reduce-motion .animate-ping,
+.reduce-motion .animate-pulse,
+.reduce-motion [class*="animate-"] {
+  animation: none !important;
+}

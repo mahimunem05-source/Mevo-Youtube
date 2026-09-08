@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>MEVO — Evolution of Sound</title>
+
+    <!-- PWA & Mobile Web App Capabilities -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#071012" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MEVO" />
+    <meta name="application-name" content="MEVO" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- Complete Search Engine & Web Crawler Blocking -->
+    <meta
+      name="robots"
+      content="noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate, noydir, noodp"
+    />
+    <meta
+      name="googlebot"
+      content="noindex, nofollow, noarchive, nosnippet, noimageindex, notranslate"
+    />
+    <meta name="bingbot" content="noindex, nofollow, noarchive, nosnippet, noimageindex" />
+    <meta name="slurp" content="noindex, nofollow, noarchive, nosnippet" />
+    <meta name="duckduckbot" content="noindex, nofollow" />
+    <meta name="baiduspider" content="noindex, nofollow" />
+    <meta name="yandex" content="noindex, nofollow" />
+
+    <meta
+      name="description"
+      content="Stream millions of songs, playlists and artists with immersive sound on MEVO."
+    />
+    <meta name="author" content="MEVO" />
+    <meta property="og:title" content="MEVO" />
+    <meta property="og:description" content="Premium music streaming with immersive sound." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&family=Sora:wght@600;700;800&display=swap"
+    />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
+
+    <!-- Instant theme initialization to prevent flash -->
+    <script>
+      (function () {
+        try {
+          var s = localStorage.getItem("mevo-user-settings");
+          var t = "dark";
+          if (s) {
+            var p = JSON.parse(s);
+            if (p && p.theme) {
+              if (p.theme === "midnight" || p.theme === "light") {
+                t = p.theme;
+              } else {
+                t = "dark";
+              }
+            }
+          }
+          document.documentElement.setAttribute("data-theme", t);
+          if (t === "light") {
+            document.documentElement.classList.remove("dark", "midnight");
+            document.documentElement.classList.add("light");
+          } else if (t === "midnight") {
+            document.documentElement.classList.remove("light");
+            document.documentElement.classList.add("dark", "midnight");
+          } else {
+            document.documentElement.classList.remove("light", "midnight");
+            document.documentElement.classList.add("dark");
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

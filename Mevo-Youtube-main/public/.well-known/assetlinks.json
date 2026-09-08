@@ -1,0 +1,14 @@
+[
+    {
+        "relation": [
+            "delegate_permission/common.handle_all_urls"
+        ],
+        "target": {
+            "namespace": "android_app",
+            "package_name": "app.netlify.mevo_m.twa",
+            "sha256_cert_fingerprints": [
+                "07:E0:E2:C8:3A:37:09:2F:23:06:50:37:BE:D9:74:76:B8:46:40:1C:6F:09:81:68:B7:B2:DB:E4:DE:34:F8:66"
+            ]
+        }
+    }
+]
