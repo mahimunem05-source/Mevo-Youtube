@@ -1462,10 +1462,57 @@ def stream_audio():
                 uniform_meta["stream_url"] = stream_info["audioUrl"]
                 return jsonify(uniform_meta)
 
-            response = redirect(stream_info["audioUrl"], code=302)
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Cache-Control"] = "public, max-age=7200"
-            return response
+            audio_url = stream_info["audioUrl"]
+            upstream_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+            if "Range" in request.headers:
+                upstream_headers["Range"] = request.headers["Range"]
+
+            try:
+                upstream_res = requests.get(audio_url, headers=upstream_headers, stream=True, timeout=15)
+
+                if request.method == "HEAD":
+                    head_resp = Response("", status=upstream_res.status_code)
+                    head_resp.headers["Content-Type"] = upstream_res.headers.get("Content-Type", "audio/webm")
+                    head_resp.headers["Access-Control-Allow-Origin"] = "*"
+                    head_resp.headers["Accept-Ranges"] = "bytes"
+                    if "Content-Length" in upstream_res.headers:
+                        head_resp.headers["Content-Length"] = upstream_res.headers["Content-Length"]
+                    return head_resp
+
+                def generate_audio_chunks():
+                    try:
+                        for chunk in upstream_res.iter_content(chunk_size=65536):
+                            yield chunk
+                    except GeneratorExit:
+                        upstream_res.close()
+                    except Exception:
+                        upstream_res.close()
+
+                response_headers = {
+                    "Content-Type": upstream_res.headers.get("Content-Type", "audio/webm"),
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "Range, Content-Type, Accept",
+                    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+                    "Accept-Ranges": "bytes",
+                    "Cache-Control": "public, max-age=10800",
+                }
+                if "Content-Range" in upstream_res.headers:
+                    response_headers["Content-Range"] = upstream_res.headers["Content-Range"]
+                if "Content-Length" in upstream_res.headers:
+                    response_headers["Content-Length"] = upstream_res.headers["Content-Length"]
+
+                return Response(
+                    generate_audio_chunks(),
+                    status=upstream_res.status_code,
+                    headers=response_headers,
+                )
+            except Exception as stream_err:
+                logging.error(f"[StreamProxy] Proxy streaming error: {stream_err}")
+                response = redirect(audio_url, code=302)
+                response.headers["Access-Control-Allow-Origin"] = "*"
+                return response
 
         return jsonify({"error": "Failed to resolve stream URL."}), 404
 

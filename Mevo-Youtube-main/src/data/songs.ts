@@ -40,9 +40,14 @@ export function isSongExplicit(song?: Song | null): boolean {
 
 export function isYouTubeSong(song?: Song | null): boolean {
   if (!song) return false;
+  const rawId = (song.id || "").replace(/^yt-/, "").trim();
+  if (/^[a-zA-Z0-9_-]{11}$/.test(rawId)) {
+    return true;
+  }
   if (
     song.id?.startsWith("yt-") ||
     song.category === "YouTube" ||
+    song.category === "YouTube Radio" ||
     song.album === "YouTube Stream" ||
     song.album === "YouTube"
   ) {
@@ -58,7 +63,7 @@ export function isYouTubeSong(song?: Song | null): boolean {
   }
   if (
     song.audio &&
-    (song.audio.includes("youtube") || song.audio.includes("googlevideo"))
+    (song.audio.includes("youtube") || song.audio.includes("googlevideo") || song.audio.includes("/stream"))
   ) {
     return true;
   }

@@ -24,7 +24,8 @@ import { playbackEvents } from "@/lib/playback-events";
 import { startEngagementTracking } from "@/lib/ranking/engagement-tracker";
 import { createUniversalSmartQueue, generateDiscoveryQueue } from "@/lib/ranking/queue-engine";
 import { useSettings } from "@/context/SettingsContext";
-import { getYouTubeStreamUrl } from "@/lib/extractor";
+import { getYouTubeStreamUrl, extractYouTubeVideoId } from "@/lib/extractor";
+import { youtubePlayerBridge } from "@/lib/youtube-player-bridge";
 import { getRelatedTracks } from "@/lib/youtube-api";
 import {
   recordPlayAffinity,
@@ -413,6 +414,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [settings.autoplay, updateSetting]);
 
   const current = session.currentIndex >= 0 ? (session.queue[session.currentIndex] ?? null) : null;
+  const currentRef = useRef<Song | null>(current);
+  useEffect(() => {
+    currentRef.current = current;
+  }, [current]);
 
   // Anonymous engagement tracking
   useEffect(() => startEngagementTracking(), []);
@@ -551,13 +556,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [session, current?.id, shuffle, repeat, volume, autoplayEnabled]);
 
-  // Synchronize volume & mute state directly to the single audio element
+  // Synchronize volume & mute state directly to the single audio element & YouTube bridge
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio) return;
-    const targetVolume = muted ? 0 : Math.max(0, Math.min(1, volume));
-    audio.volume = targetVolume;
-    audio.muted = muted;
+    if (audio) {
+      const targetVolume = muted ? 0 : Math.max(0, Math.min(1, volume));
+      audio.volume = targetVolume;
+      audio.muted = muted;
+    }
+    youtubePlayerBridge.setVolume(volume, muted);
   }, [volume, muted]);
 
   // Safe playback trigger
@@ -604,6 +611,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
       setPlaying(true);
       setProgress(0);
+      if (song.duration && song.duration > 0) {
+        setDuration(song.duration);
+      }
       setPlaybackError(null);
       setPlayerVisible(true);
 
@@ -1329,6 +1339,98 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const next = useCallback(() => step(1, false), [step]);
   const previous = useCallback(() => step(-1, false), [step]);
 
+  // YouTube IFrame Player integration & event listeners
+  useEffect(() => {
+    youtubePlayerBridge.init("mevo-youtube-iframe-container");
+
+    const unsubscribeState = youtubePlayerBridge.onStateChange((state) => {
+      const activeSong = currentRef.current;
+      if (!activeSong || !isYouTubeSong(activeSong)) return;
+
+      if (state === "playing") {
+        setPlaying(true);
+        setIsBuffering(false);
+        const ytDuration = youtubePlayerBridge.getDuration();
+        if (ytDuration > 0) {
+          setDuration(ytDuration);
+        }
+      } else if (state === "paused") {
+        setPlaying(false);
+        setIsBuffering(false);
+      } else if (state === "buffering") {
+        setIsBuffering(true);
+        playbackEvents.emit("BUFFERING", { buffering: true });
+      } else if (state === "ended") {
+        setIsBuffering(false);
+        recordTrackCompleted(activeSong);
+
+        const shouldLogActivity = settings.showListeningActivity && !settings.privateSession;
+        if (shouldLogActivity) {
+          void recordPlay(activeSong.id, duration || activeSong.duration, true);
+          recordSongPlayedTimestamp(activeSong.id);
+        }
+
+        if (repeatRef.current === "one") {
+          youtubePlayerBridge.seek(0);
+          setProgress(0);
+          youtubePlayerBridge.play();
+          return;
+        }
+
+        step(1, true);
+      }
+    });
+
+    const unsubscribeError = youtubePlayerBridge.onError((error) => {
+      const failedSong = currentRef.current;
+      if (!failedSong || !isYouTubeSong(failedSong)) return;
+      setIsBuffering(false);
+      console.warn("[YouTube Player] Playback error code:", error);
+      if (error === 101 || error === 150 || error?.data === 101 || error?.data === 150) {
+        setPlaybackError(`"${failedSong.title}" is restricted from embedding by YouTube/owner. Advancing...`);
+        setTimeout(() => step(1, true), 1500);
+      }
+    });
+
+    return () => {
+      unsubscribeState();
+      unsubscribeError();
+    };
+  }, [step, settings.showListeningActivity, settings.privateSession, duration]);
+
+  // YouTube playback progress polling (~4x/sec)
+  useEffect(() => {
+    if (!current || !isYouTubeSong(current) || !isPlaying) return;
+
+    const interval = setInterval(() => {
+      const currentTime = youtubePlayerBridge.getCurrentTime();
+      const currentDuration = youtubePlayerBridge.getDuration();
+
+      if (currentDuration > 0) {
+        setDuration(currentDuration);
+      }
+
+      if (currentTime > 0 || isPlaying) {
+        setProgress(currentTime);
+        trackListenedSecondsRef.current = currentTime;
+
+        const now = performance.now();
+        if (now - lastTimeEventRef.current > 500) {
+          lastTimeEventRef.current = now;
+          playbackEvents.emit("TIME_UPDATE", {
+            currentTime,
+            duration: currentDuration || duration || current.duration || 0,
+          });
+          if (current) {
+            recordTrackProgress(current, currentTime, currentDuration || duration || current.duration || 0);
+          }
+        }
+      }
+    }, 250);
+
+    return () => clearInterval(interval);
+  }, [current, isPlaying, duration]);
+
   const toggle = useCallback(() => {
     if (!current) {
       const first = catalogue[0];
@@ -1337,6 +1439,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     setPlaying((value) => {
       const nextState = !value;
+      if (isYouTubeSong(current)) {
+        if (nextState) {
+          youtubePlayerBridge.play();
+        } else {
+          youtubePlayerBridge.pause();
+        }
+      }
       playbackEvents.emit(
         nextState ? "PLAY" : "PAUSE",
         nextState ? { song: current } : { song: current },
@@ -1364,12 +1473,63 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeAttribute("src");
       delete audio.dataset.songId;
       audio.load();
+      youtubePlayerBridge.stop();
       setProgress(0);
       return;
     }
 
+    // YouTube playback path: handled via YouTubePlayerBridge to bypass 403 & bot blocks
+    if (isYouTubeSong(current)) {
+      audio.pause();
+      audio.removeAttribute("src");
+      delete audio.dataset.songId;
+
+      const cleanId = extractYouTubeVideoId(current.id);
+      if (current.duration && current.duration > 0) {
+        setDuration(current.duration);
+      }
+
+      const activeYtId = youtubePlayerBridge.getCurrentVideoId();
+      if (activeYtId !== cleanId) {
+        setProgress(0);
+        youtubePlayerBridge.loadVideo(cleanId, isPlaying);
+      } else {
+        if (isPlaying) {
+          youtubePlayerBridge.play();
+        } else {
+          youtubePlayerBridge.pause();
+        }
+      }
+
+      // MediaSession API Sync for lock-screen & mobile media controls
+      if (typeof window !== "undefined" && "mediaSession" in navigator) {
+        try {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: current.title,
+            artist: current.artist,
+            album: current.album || "MEVO",
+            artwork: [
+              { src: current.cover, sizes: "96x96", type: "image/jpeg" },
+              { src: current.cover, sizes: "128x128", type: "image/jpeg" },
+              { src: current.cover, sizes: "192x192", type: "image/jpeg" },
+              { src: current.cover, sizes: "256x256", type: "image/jpeg" },
+              { src: current.cover, sizes: "384x384", type: "image/jpeg" },
+              { src: current.cover, sizes: "512x512", type: "image/jpeg" },
+            ],
+          });
+          navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+        } catch {
+          // Ignore unsupported MediaSession attributes
+        }
+      }
+      return;
+    }
+
+    // Non-YouTube path (Local / Supabase / B2 upload)
+    youtubePlayerBridge.pause();
+
     let audioSrc = current.audio;
-    if (!audioSrc || isYouTubeSong(current) || !audioSrc.startsWith("http")) {
+    if (!audioSrc || !audioSrc.startsWith("http")) {
       audioSrc = getYouTubeStreamUrl(current.id);
     }
 
@@ -1398,36 +1558,37 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     // MediaSession API Sync for lock-screen & mobile media controls
     if (typeof window !== "undefined" && "mediaSession" in navigator) {
-      if (current) {
-        try {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: current.title,
-            artist: current.artist,
-            album: current.album || "MEVO",
-            artwork: [
-              { src: current.cover, sizes: "96x96", type: "image/jpeg" },
-              { src: current.cover, sizes: "128x128", type: "image/jpeg" },
-              { src: current.cover, sizes: "192x192", type: "image/jpeg" },
-              { src: current.cover, sizes: "256x256", type: "image/jpeg" },
-              { src: current.cover, sizes: "384x384", type: "image/jpeg" },
-              { src: current.cover, sizes: "512x512", type: "image/jpeg" },
-            ],
-          });
-          navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
-        } catch {
-          // Ignore unsupported MediaSession attributes
-        }
-      } else {
-        navigator.mediaSession.metadata = null;
-        navigator.mediaSession.playbackState = "none";
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: current.title,
+          artist: current.artist,
+          album: current.album || "MEVO",
+          artwork: [
+            { src: current.cover, sizes: "96x96", type: "image/jpeg" },
+            { src: current.cover, sizes: "128x128", type: "image/jpeg" },
+            { src: current.cover, sizes: "192x192", type: "image/jpeg" },
+            { src: current.cover, sizes: "256x256", type: "image/jpeg" },
+            { src: current.cover, sizes: "384x384", type: "image/jpeg" },
+            { src: current.cover, sizes: "512x512", type: "image/jpeg" },
+          ],
+        });
+        navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+      } catch {
+        // Ignore unsupported MediaSession attributes
       }
     }
   }, [current, isPlaying, executePlay]);
 
   const seek = useCallback((seconds: number) => {
-    const audio = audioRef.current;
-    if (audio && Number.isFinite(seconds)) {
-      audio.currentTime = seconds;
+    if (!Number.isFinite(seconds)) return;
+    const activeSong = currentRef.current;
+    if (activeSong && isYouTubeSong(activeSong)) {
+      youtubePlayerBridge.seek(seconds);
+    } else {
+      const audio = audioRef.current;
+      if (audio) {
+        audio.currentTime = seconds;
+      }
     }
     setProgress(seconds);
     playbackEvents.emit("SEEK", { seconds });
@@ -1656,6 +1817,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     <PlayerContext.Provider value={value}>
       <PlayerProgressContext.Provider value={progressValue}>
         {children}
+        {/* Dedicated YouTube IFrame Player bridge for official, unblocked browser playback */}
+        <div
+          className="pointer-events-none fixed -top-[9999px] -left-[9999px] h-[1px] w-[1px] opacity-0 overflow-hidden"
+          aria-hidden="true"
+        >
+          <div id="mevo-youtube-iframe-container" />
+        </div>
         {/* Single Dedicated HTMLAudioElement instance rendered in React DOM tree */}
         <audio
           ref={audioRef}

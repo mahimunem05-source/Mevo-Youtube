@@ -128,16 +128,17 @@ export function getExtractorBaseUrl(): string {
     typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {}
   ) as Record<string, string | undefined>;
 
+  // In local development (npm run dev), route through local Vite dev server middleware
+  if (metaEnv.DEV) {
+    return "";
+  }
+
   const configured = metaEnv.VITE_EXTRACTOR_URL || metaEnv.VITE_EXTRACTOR_API_URL;
   if (configured) {
     return configured.replace(/\/+$/, "");
   }
 
-  if (metaEnv.PROD) {
-    return "https://mevo-extractor.onrender.com";
-  }
-
-  return "http://127.0.0.1:5001";
+  return "https://mevo-extractor.onrender.com";
 }
 
 /**
