@@ -709,6 +709,7 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
                     "part": "snippet",
                     "type": "video",
                     "videoCategoryId": "10",
+                    "videoEmbeddable": "true",
                     "maxResults": min(50, max(limit, 10)),
                     "q": f"{query} -shorts -tiktok -billboard -top10 -top20 -top50 -top100 -recap -countdown -ranking",
                     "key": key,
@@ -789,6 +790,9 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
 
                 # Strict rejection of kids/cartoons content & non-music categories
                 if status_info.get("madeForKids") or status_info.get("selfDeclaredMadeForKids"):
+                    continue
+                # Skip non-embeddable videos — these cause YouTube error 101/150 in the player
+                if detail and status_info.get("embeddable") is False:
                     continue
                 if detail.get("snippet", {}).get("categoryId") and detail.get("snippet", {}).get("categoryId") != "10":
                     continue

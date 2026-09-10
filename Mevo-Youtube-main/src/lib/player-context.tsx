@@ -1385,10 +1385,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const failedSong = currentRef.current;
       if (!failedSong || !isYouTubeSong(failedSong)) return;
       setIsBuffering(false);
-      console.warn("[YouTube Player] Playback error code:", error);
-      if (error === 101 || error === 150 || error?.data === 101 || error?.data === 150) {
-        setPlaybackError(`"${failedSong.title}" is restricted from embedding by YouTube/owner. Advancing...`);
-        setTimeout(() => step(1, true), 1500);
+      const errorCode = typeof error === "number" ? error : (error?.data ?? error);
+      console.warn("[YouTube Player] Playback error code:", errorCode, "for:", failedSong.title);
+      // YouTube IFrame API fatal error codes:
+      // 2   = invalid video ID
+      // 5   = HTML5 player cannot play the requested video
+      // 100 = video not found or has been removed
+      // 101 = video owner has disallowed embedding
+      // 150 = same as 101 (different encoding)
+      const FATAL_YT_ERRORS = [2, 5, 100, 101, 150];
+      if (FATAL_YT_ERRORS.includes(errorCode)) {
+        setPlaybackError(`"${failedSong.title}" cannot be played (YouTube error ${errorCode}). Skipping...`);
+        setTimeout(() => step(1, true), 1200);
       }
     });
 
