@@ -60,21 +60,24 @@ logging.basicConfig(
 # Multi-Key YouTube API Pool with Automatic Key Rotation on 403
 # ---------------------------------------------------------------------------
 class YouTubeKeyPool:
-    def __init__(self):
+    def __init__(self, name: str = "default", keys: list[str] = None):
+        self.name = name
         self._lock = threading.RLock()
-        self._keys: list[str] = []
+        self._keys: list[str] = keys if keys is not None else []
         self._exhausted_keys: dict[str, float] = {}  # key -> timestamp when exhausted
         self._current_idx: int = 0
-        self.reload_keys()
+        if keys is None:
+            self.reload_keys()
 
-    def reload_keys(self):
+    def reload_keys(self, raw_keys_str: str = None):
         with self._lock:
-            raw_keys_str = (
-                os.getenv("YOUTUBE_API_KEYS")
-                or os.getenv("YOUTUBE_API_KEY")
-                or os.getenv("VITE_YOUTUBE_API_KEY")
-                or ""
-            )
+            if raw_keys_str is None:
+                raw_keys_str = (
+                    os.getenv("YOUTUBE_API_KEYS")
+                    or os.getenv("YOUTUBE_API_KEY")
+                    or os.getenv("VITE_YOUTUBE_API_KEY")
+                    or ""
+                )
             # Parse comma or semicolon or newline separated keys
             keys: list[str] = []
             for piece in re.split(r"[,;\n\s]+", raw_keys_str):
@@ -88,7 +91,7 @@ class YouTubeKeyPool:
 
             self._keys = keys
             self._current_idx = 0
-            logging.info(f"[YouTubeKeyPool] Loaded {len(self._keys)} API key(s)")
+            logging.info(f"[YouTubeKeyPool:{self.name}] Loaded {len(self._keys)} API key(s)")
 
     def _cleanup_exhausted(self):
         """Reset keys that have been exhausted for more than 12 hours (daily quota reset)"""
@@ -97,7 +100,7 @@ class YouTubeKeyPool:
             expired_keys = [k for k, ts in self._exhausted_keys.items() if now - ts > 12 * 3600]
             for k in expired_keys:
                 del self._exhausted_keys[k]
-                logging.info(f"[YouTubeKeyPool] Reset exhaustion state for key: {self._mask_key(k)}")
+                logging.info(f"[YouTubeKeyPool:{self.name}] Reset exhaustion state for key: {self._mask_key(k)}")
 
     @staticmethod
     def _mask_key(key: str) -> str:
@@ -126,7 +129,7 @@ class YouTubeKeyPool:
             if key not in self._exhausted_keys:
                 self._exhausted_keys[key] = time.time()
                 logging.warning(
-                    f"[YouTubeKeyPool] Key {self._mask_key(key)} marked EXHAUSTED ({reason}). "
+                    f"[YouTubeKeyPool:{self.name}] Key {self._mask_key(key)} marked EXHAUSTED ({reason}). "
                     f"Active remaining: {len(self._keys) - len(self._exhausted_keys)}/{len(self._keys)}"
                 )
             # Advance pointer
@@ -137,6 +140,7 @@ class YouTubeKeyPool:
         self._cleanup_exhausted()
         with self._lock:
             return {
+                "name": self.name,
                 "total_keys": len(self._keys),
                 "active_keys": len(self._keys) - len(self._exhausted_keys),
                 "exhausted_keys": len(self._exhausted_keys),
@@ -145,7 +149,59 @@ class YouTubeKeyPool:
             }
 
 
-key_pool = YouTubeKeyPool()
+def _parse_keys(raw: str) -> list[str]:
+    keys = []
+    for piece in re.split(r"[,;\n\s]+", raw or ""):
+        clean = piece.strip().strip('"').strip("'")
+        if clean and clean != "your_google_youtube_api_key_here":
+            match = re.search(r"AIzaSy[A-Za-z0-9_-]{33}", clean)
+            k = match.group(0) if match else clean
+            if k and k not in keys:
+                keys.append(k)
+    return keys
+
+
+def init_youtube_pools() -> tuple[YouTubeKeyPool, YouTubeKeyPool]:
+    disc_raw = os.getenv("SONG_DISCOVERY_API_KEYS") or ""
+    search_raw = os.getenv("SEARCH_API_KEYS") or ""
+    fallback_raw = (
+        os.getenv("YOUTUBE_API_KEYS")
+        or os.getenv("YOUTUBE_API_KEY")
+        or os.getenv("VITE_YOUTUBE_API_KEY")
+        or ""
+    )
+
+    disc_keys = _parse_keys(disc_raw)
+    search_keys = _parse_keys(search_raw)
+    fallback_keys = _parse_keys(fallback_raw)
+
+    if not disc_keys and not search_keys and fallback_keys:
+        if len(fallback_keys) >= 2:
+            search_keys = [fallback_keys[-1]]
+            disc_keys = fallback_keys[:-1]
+        else:
+            disc_keys = list(fallback_keys)
+            search_keys = list(fallback_keys)
+    elif not disc_keys and fallback_keys:
+        disc_keys = [k for k in fallback_keys if k not in search_keys] or list(fallback_keys)
+    elif not search_keys and fallback_keys:
+        search_keys = [k for k in fallback_keys if k not in disc_keys] or list(fallback_keys)
+
+    discovery_pool = YouTubeKeyPool(name="Song Discovery", keys=disc_keys)
+    search_pool = YouTubeKeyPool(name="Search", keys=search_keys)
+
+    logging.info(f"[YouTube Pools Initialized] Discovery Pool: {len(disc_keys)} key(s), Search Pool: {len(search_keys)} key(s)")
+    return discovery_pool, search_pool
+
+
+discovery_key_pool, search_key_pool = init_youtube_pools()
+key_pool = search_key_pool  # Backward compatibility alias
+
+
+def get_key_pool(pool: str = "search") -> YouTubeKeyPool:
+    if pool in ("discovery", "category", "trending"):
+        return discovery_key_pool
+    return search_key_pool
 
 # ---------------------------------------------------------------------------
 # Single-Flight Request Deduplication / Coalescing
@@ -745,19 +801,27 @@ def build_uniform_item(vid_id: str, raw_title: str, channel: str, thumbnail: str
 # ---------------------------------------------------------------------------
 # Search Provider: YouTube Data API v3 with Automatic Pool Rotation
 # ---------------------------------------------------------------------------
-def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", page_token: str = None) -> tuple[list[dict], str | None] | None:
+def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", page_token: str = None, pool: str = "search") -> tuple[list[dict], str | None] | None:
     """
     Attempts to search using YouTube Data API v3 with automatic key rotation on 403 quota errors,
-    concurrency limiting via semaphore, and exponential backoff for transient 429/5xx errors.
+    isolated to the specified pool ("discovery" or "search"), concurrency limiting via semaphore,
+    and exponential backoff for transient 429/5xx errors.
     """
-    max_attempts = max(1, len(key_pool._keys) + 1)
+    active_pool = get_key_pool(pool)
+    max_attempts = max(1, len(active_pool._keys) + 1)
     attempts = 0
 
     while attempts < max_attempts:
-        key = key_pool.get_active_key()
+        key = active_pool.get_active_key()
         if not key:
-            logging.info("[YouTubeKeyPool] No active API keys available. Ready for yt-dlp fallback.")
-            return None
+            # Emergency failover: borrow active key from the other pool if available
+            fallback_pool = search_key_pool if active_pool == discovery_key_pool else discovery_key_pool
+            key = fallback_pool.get_active_key()
+            if not key:
+                logging.info(f"[YouTubeKeyPool:{active_pool.name}] No active API keys available in primary or fallback pool. Ready for yt-dlp fallback.")
+                return None
+            logging.warning(f"[YouTube API:{active_pool.name}] Primary pool exhausted. Borrowing active key {YouTubeKeyPool._mask_key(key)} from {fallback_pool.name} pool.")
+            active_pool = fallback_pool
 
         attempts += 1
         masked = YouTubeKeyPool._mask_key(key)
@@ -781,6 +845,8 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
                 for retry in range(3):
                     try:
                         res = requests.get(search_url, params=params, timeout=8)
+                        if res.status_code == 429 and "RESOURCE_EXHAUSTED" in res.text:
+                            break
                         if res.status_code == 429 or (500 <= res.status_code < 600):
                             time.sleep(0.4 * (2 ** retry) + random.uniform(0.05, 0.2))
                             continue
@@ -794,14 +860,14 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
             if not res:
                 return None
 
-            if res.status_code == 403:
+            if res.status_code == 403 or (res.status_code == 429 and "RESOURCE_EXHAUSTED" in res.text):
                 err_data = res.json().get("error", {}) if res.content else {}
                 err_msg = err_data.get("message", "Quota Exceeded")
-                key_pool.mark_key_exhausted(key, reason=f"HTTP 403: {err_msg}")
+                active_pool.mark_key_exhausted(key, reason=f"HTTP {res.status_code}: {err_msg}")
                 continue
 
             if not res.ok:
-                logging.warning(f"[YouTube API] Search returned HTTP {res.status_code} with key {masked}: {res.text[:120]}")
+                logging.warning(f"[YouTube API:{active_pool.name}] Search returned HTTP {res.status_code} with key {masked}: {res.text[:120]}")
                 return None
 
             data = res.json()
@@ -827,7 +893,7 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
                     }
                     d_res = requests.get(details_url, params=d_params, timeout=8)
                 if d_res.status_code == 403:
-                    key_pool.mark_key_exhausted(key, reason="403 on video details")
+                    active_pool.mark_key_exhausted(key, reason="403 on video details")
                     continue
                 if d_res.ok:
                     for d_item in d_res.json().get("items", []):
@@ -857,10 +923,17 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
                 if detail.get("snippet", {}).get("categoryId") and detail.get("snippet", {}).get("categoryId") != "10":
                     continue
 
-                raw_title = snippet.get("title", "")
-                channel = snippet.get("channelTitle", "")
-                desc = snippet.get("description", "")
-                published_at = snippet.get("publishedAt")
+                d_snippet = detail.get("snippet", {}) if isinstance(detail, dict) else {}
+                raw_title = d_snippet.get("title") or snippet.get("title", "")
+                channel = (
+                    d_snippet.get("channelTitle")
+                    or d_snippet.get("videoOwnerChannelTitle")
+                    or snippet.get("channelTitle")
+                    or snippet.get("videoOwnerChannelTitle")
+                    or ""
+                )
+                desc = d_snippet.get("description") or snippet.get("description", "")
+                published_at = d_snippet.get("publishedAt") or snippet.get("publishedAt")
 
                 if is_blacklisted_media(raw_title, channel, desc):
                     continue
@@ -901,7 +974,7 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
             return results[:limit], next_page_token
 
         except Exception as e:
-            logging.error(f"[YouTube API] Search error with key {YouTubeKeyPool._mask_key(key)}: {str(e)}")
+            logging.error(f"[YouTube API:{active_pool.name}] Search error with key {YouTubeKeyPool._mask_key(key)}: {str(e)}")
             return None
 
     return None
@@ -973,12 +1046,13 @@ def search_ytdlp_fallback(query: str, limit: int = 25, base_url: str = "", offse
 # ---------------------------------------------------------------------------
 # Core Unified Search Controller with Dual-Tier Caching & Single-Flight
 # ---------------------------------------------------------------------------
-def execute_search(query: str, limit: int = 25, search_type: str = "general", page_token: str = None) -> tuple[list[dict], str | None, str]:
+def execute_search(query: str, limit: int = 25, search_type: str = "general", page_token: str = None, pool: str = None) -> tuple[list[dict], str | None, str]:
     normalized_q = query.strip().lower()
     if not normalized_q:
         return [], None, "none"
 
-    cache_key = f"search:{normalized_q}:limit={limit}:type={search_type}:token={page_token or '0'}"
+    target_pool = pool if pool else ("discovery" if search_type in ("category", "discovery", "trending") else "search")
+    cache_key = f"search:{target_pool}:{normalized_q}:limit={limit}:type={search_type}:token={page_token or '0'}"
     cached_data = search_cache.get(cache_key)
     if cached_data is not None:
         request_budget.record_request("search", hit=True)
@@ -988,8 +1062,8 @@ def execute_search(query: str, limit: int = 25, search_type: str = "general", pa
         request_budget.record_request("search", hit=False, upstream=True)
         base_url = get_base_url()
 
-        # 1. Try YouTube Data API Pool
-        api_res = search_youtube_api_pool(query.strip(), limit=limit, base_url=base_url, page_token=page_token)
+        # 1. Try YouTube Data API Pool with designated pool
+        api_res = search_youtube_api_pool(query.strip(), limit=limit, base_url=base_url, page_token=page_token, pool=target_pool)
         if api_res is not None:
             if isinstance(api_res, tuple) and len(api_res) == 2:
                 items, next_token = api_res
@@ -1010,7 +1084,7 @@ def execute_search(query: str, limit: int = 25, search_type: str = "general", pa
             except Exception:
                 offset = 0
 
-        logging.info(f"[Search Engine] Falling back to yt-dlp for query: '{query.strip()}'")
+        logging.info(f"[Search Engine] Falling back to yt-dlp for query: '{query.strip()}' (pool={target_pool})")
         ytdlp_res = search_ytdlp_fallback(query.strip(), limit=limit, base_url=base_url, offset=offset)
         if ytdlp_res:
             if isinstance(ytdlp_res, tuple) and len(ytdlp_res) == 2:
@@ -1033,6 +1107,7 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
     """
     Fetches the live YouTube MEVO Pulse trending feed via official music charts (chart=mostPopular&videoCategoryId=10),
     filtered for shorts, non-music, and ranked by current velocity, freshness, and popularity.
+    Powered by Pool A (Song Discovery).
     """
     cache_key = f"youtube:trending:{region}:{limit}:{page_token or '0'}"
     cached = search_cache.get(cache_key)
@@ -1044,8 +1119,8 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
         request_budget.record_request("trending", hit=False, upstream=True)
         base_url = get_base_url()
 
-        # 1. First priority: Official YouTube Music Chart (chart=mostPopular&videoCategoryId=10)
-        key = key_pool.get_active_key()
+        # 1. First priority: Official YouTube Music Chart using Pool A (Song Discovery)
+        key = discovery_key_pool.get_active_key()
         if key:
             try:
                 with youtube_api_semaphore:
@@ -1062,7 +1137,7 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
                         t_params["pageToken"] = page_token
                     t_res = requests.get(t_url, params=t_params, timeout=8)
                     if t_res.status_code == 403:
-                        key_pool.mark_key_exhausted(key, "403 on chart trending")
+                        discovery_key_pool.mark_key_exhausted(key, "403 on chart trending")
                     elif t_res.ok:
                         data = t_res.json()
                         raw_items = data.get("items", [])
@@ -1125,7 +1200,7 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
             except Exception as e:
                 logging.warning(f"[fetch_trending_feed] YouTube API chart error: {e}")
 
-        # 2. Fallback: Multi-category fresh music candidate search
+        # 2. Fallback: Multi-category fresh music candidate search (routes via Pool A: discovery)
         PULSE_CATEGORIES = [
             ("hindi", "latest hindi official audio songs | trending bollywood music video -top10 -top20 -top50 -recap"),
             ("english", "viral english pop official audio | new english songs official -billboard -top10 -top20 -recap"),
@@ -1137,7 +1212,7 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
         category_lists = []
 
         for sec_genre, cat_query in PULSE_CATEGORIES:
-            items, _, _ = execute_search(cat_query, limit=category_target)
+            items, _, _ = execute_search(cat_query, limit=category_target, search_type="discovery", pool="discovery")
             if items:
                 genre_items = []
                 for it in items:
@@ -1173,17 +1248,19 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
             search_cache.set(cache_key, res, ttl=1200)
             return res
 
-        # 3. Final Fallback
+        # 3. Final Fallback (routes via Pool A: discovery)
         fallback_items, _, _ = execute_search(
             "latest hindi bollywood english pop phonk viral official audio -billboard -top10 -top20 -top50 -top100 -recap -countdown",
-            limit=limit * 2
+            limit=limit * 2,
+            search_type="discovery",
+            pool="discovery"
         )
         final_list = []
         for it in fallback_items:
             vid_id = it.get("id")
             if vid_id and vid_id not in seen_ids:
                 dur = it.get("duration", 0)
-                raw_t = it.get("title", "")
+                raw_t = item.get("title", "")
                 desc = it.get("description", "")
                 if is_shorts_media(raw_t, desc, dur):
                     continue
@@ -1206,6 +1283,7 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
 def fetch_category_feed(query: str, order: str = "viewCount", limit: int = 25, page_token: str = None, section_id: str = "bangla", category_title: str = "Category") -> dict:
     """
     Fetches category tracks with uniform player song output, query pagination, and single-flight coalescing.
+    Powered by Pool A (Song Discovery).
     """
     normalized_q = query.strip().lower()
     cache_key = f"youtube:category:{normalized_q}:{order}:{limit}:{page_token or '0'}"
@@ -1217,7 +1295,7 @@ def fetch_category_feed(query: str, order: str = "viewCount", limit: int = 25, p
     def _do_category():
         request_budget.record_request("category", hit=False, upstream=True)
         search_limit = 50
-        items, next_token, source = execute_search(query, limit=search_limit, search_type="category", page_token=page_token)
+        items, next_token, source = execute_search(query, limit=search_limit, search_type="category", page_token=page_token, pool="discovery")
         songs = []
         for it in items:
             raw_t = it.get("title", "")
@@ -1247,7 +1325,7 @@ def fetch_category_feed(query: str, order: str = "viewCount", limit: int = 25, p
     return single_flight.execute(f"flight:{cache_key}", _do_category)
 
 
-def fetch_video_details_batch(video_ids: list[str]) -> dict:
+def fetch_video_details_batch(video_ids: list[str], pool: str = "discovery") -> dict:
     clean_ids = [extract_video_id(v) for v in video_ids if extract_video_id(v)]
     if not clean_ids:
         return {}
@@ -1265,7 +1343,8 @@ def fetch_video_details_batch(video_ids: list[str]) -> dict:
     if not missing_ids:
         return result_map
 
-    key = key_pool.get_active_key()
+    active_pool = get_key_pool(pool)
+    key = active_pool.get_active_key()
     if key and missing_ids:
         for i in range(0, len(missing_ids), 50):
             chunk = missing_ids[i:i+50]
@@ -1279,7 +1358,7 @@ def fetch_video_details_batch(video_ids: list[str]) -> dict:
                     }
                     res = requests.get(d_url, params=params, timeout=8)
                     if res.status_code == 403:
-                        key_pool.mark_key_exhausted(key, "403 on video details batch")
+                        active_pool.mark_key_exhausted(key, "403 on video details batch")
                         break
                     if res.ok:
                         for item in res.json().get("items", []):
@@ -1338,6 +1417,10 @@ def search_endpoint():
         limit = max(1, min(50, limit))
         search_type = request.args.get("type") or data.get("type") or "general"
         page_token = request.args.get("pageToken") or request.args.get("page_token") or data.get("pageToken") or data.get("page_token")
+        pool_param = request.args.get("pool") or data.get("pool")
+
+        # Isolated routing: discovery requests use Pool A; live searches use Pool B
+        target_pool = "discovery" if (pool_param == "discovery" or search_type in ("category", "discovery")) else "search"
 
         if not query.strip():
             return jsonify({
@@ -1345,17 +1428,19 @@ def search_endpoint():
                 "count": 0,
                 "nextPageToken": None,
                 "source": "none",
-                "query": ""
+                "query": "",
+                "pool": target_pool
             })
 
-        items, next_page_token, source = execute_search(query, limit=limit, search_type=search_type, page_token=page_token)
+        items, next_page_token, source = execute_search(query, limit=limit, search_type=search_type, page_token=page_token, pool=target_pool)
 
         return jsonify({
             "items": items,
             "count": len(items),
             "nextPageToken": next_page_token,
             "source": source,
-            "query": query.strip()
+            "query": query.strip(),
+            "pool": target_pool
         })
 
     except Exception as e:
@@ -1468,8 +1553,10 @@ def videos_endpoint():
         if not ids_list:
             return jsonify({"items": {}})
 
-        result = fetch_video_details_batch(ids_list[:50])
-        return jsonify({"items": result})
+        pool_param = request.args.get("pool") or data.get("pool") or "discovery"
+        target_pool = "search" if pool_param == "search" else "discovery"
+        result = fetch_video_details_batch(ids_list[:50], pool=target_pool)
+        return jsonify({"items": result, "pool": target_pool})
     except Exception as e:
         logging.error(f"Videos endpoint error: {e}")
         return jsonify({"error": str(e), "items": {}}), 500
@@ -2160,6 +2247,177 @@ def get_related_queue():
     return resp
 
 # ---------------------------------------------------------------------------
+# Multi-Tier Lyrics & Audio-Guided Alignment API
+# ---------------------------------------------------------------------------
+def _parse_lrc_py(lrc_str: str) -> list[dict]:
+    lines = []
+    time_re = re.compile(r"\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]")
+    for raw in (lrc_str or "").splitlines():
+        trimmed = raw.strip()
+        if not trimmed or re.match(r"^\[(ti|ar|al|by|offset|length):", trimmed, re.IGNORECASE):
+            continue
+        matches = list(time_re.finditer(trimmed))
+        if not matches:
+            continue
+        text_only = time_re.sub("", trimmed).strip()
+        if not text_only:
+            continue
+        for m in matches:
+            mins = int(m.group(1))
+            secs = int(m.group(2))
+            frac_str = m.group(3) or "0"
+            frac = int(frac_str) / (1000.0 if len(frac_str) == 3 else 100.0)
+            total = round(mins * 60 + secs + frac, 2)
+            lines.append({"time": total, "text": text_only})
+    lines.sort(key=lambda x: x["time"])
+    for i in range(len(lines)):
+        if i + 1 < len(lines):
+            lines[i]["duration"] = max(1.2, min(8.0, round(lines[i+1]["time"] - lines[i]["time"], 2)))
+        else:
+            lines[i]["duration"] = 4.5
+    return lines
+
+def _align_plain_lyrics_py(plain_text: str, total_duration: float = 210) -> list[dict]:
+    raw_lines = [l.strip() for l in (plain_text or "").splitlines()]
+    valid = []
+    pending_break = False
+    for l in raw_lines:
+        if not l:
+            pending_break = True
+            continue
+        if re.match(r"^\[.*\]$", l) or re.match(r"^\(.*\)$", l):
+            pending_break = True
+            continue
+        valid.append({"text": l, "has_break": pending_break})
+        pending_break = False
+
+    if not valid:
+        return []
+
+    dur = max(60.0, float(total_duration or 210))
+    intro = min(24.0, max(9.0, dur * 0.075))
+    outro = min(20.0, max(7.0, dur * 0.05))
+    singing_window = max(30.0, dur - intro - outro)
+
+    weights = [max(1.5, len(v["text"].split())) for v in valid]
+    total_w = sum(weights) or 1.0
+
+    breaks_count = sum(1 for i, v in enumerate(valid) if i > 0 and v["has_break"])
+    break_dur = min(5.5, max(3.5, (singing_window * 0.15) / max(1, breaks_count)))
+    available_vocal = max(20.0, singing_window - breaks_count * break_dur)
+
+    results = []
+    curr = intro
+    for i, item in enumerate(valid):
+        if i > 0 and item["has_break"]:
+            curr += break_dur
+        ratio = weights[i] / total_w
+        line_dur = max(1.8, min(7.5, ratio * available_vocal))
+        results.append({
+            "time": round(curr, 2),
+            "duration": round(line_dur, 2),
+            "text": item["text"]
+        })
+        curr += line_dur + 0.35
+    return results
+
+@app.route("/api/lyrics", methods=["GET"])
+@app.route("/api/lyrics/youtube", methods=["GET"])
+def api_lyrics():
+    video_id = (request.args.get("videoId") or request.args.get("id") or "").replace("yt-", "").strip()
+    title = request.args.get("title") or ""
+    artist = request.args.get("artist") or ""
+    duration = float(request.args.get("duration") or 0)
+
+    if not video_id and not title:
+        return jsonify({"error": "Missing videoId or title"}), 400
+
+    cache_key = f"lyrics:{video_id or title}"
+    cached = search_cache.get(cache_key)
+    if cached:
+        resp = jsonify(cached)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+
+    clean_title = clean_search_query(title) if title else ""
+    clean_artist = re.sub(r"\s*-\s*topic$", "", artist, flags=re.IGNORECASE).strip() if artist else ""
+
+    # 1. Tier 1: Multi-Step LRCLIB Search
+    queries = [
+        f"{clean_title} {clean_artist}".strip() if clean_artist and clean_artist != "Unknown Artist" else clean_title,
+        f"{clean_title} {clean_artist.split(',')[0].strip()}" if "," in clean_artist else "",
+        clean_title
+    ]
+    queries = [q for q in queries if q]
+
+    synced_lines = []
+    plain_lyrics_text = ""
+
+    for q in queries:
+        try:
+            res = requests.get("https://lrclib.net/api/search", params={"q": q}, headers={"User-Agent": "MevoMusic/1.0"}, timeout=3)
+            if res.ok:
+                data = res.json()
+                if isinstance(data, list) and len(data) > 0:
+                    for item in data:
+                        if item.get("syncedLyrics"):
+                            synced_lines = _parse_lrc_py(item["syncedLyrics"])
+                            if synced_lines:
+                                break
+                        if not plain_lyrics_text and item.get("plainLyrics"):
+                            plain_lyrics_text = item["plainLyrics"]
+                    if synced_lines:
+                        break
+        except Exception:
+            pass
+
+    if synced_lines:
+        res_data = {
+            "source": "lrclib",
+            "lines": synced_lines
+        }
+        search_cache.set(cache_key, res_data, ttl=86400)
+        resp = jsonify(res_data)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+
+    # 2. Tier 2: Video Description Lyrics
+    if not plain_lyrics_text and video_id:
+        try:
+            d_url = "https://www.googleapis.com/youtube/v3/videos"
+            key = discovery_key_pool.get_active_key() or search_key_pool.get_active_key()
+            if key:
+                d_res = requests.get(d_url, params={"part": "snippet", "id": video_id, "key": key}, timeout=4)
+                if d_res.ok:
+                    items = d_res.json().get("items", [])
+                    if items:
+                        desc = items[0].get("snippet", {}).get("description", "")
+                        match = re.search(r"(?:lyrics|song lyrics|lyrics\s*:\s*|গান\s*:\s*|কথা\s*:\s*|बोल\s*:\s*)([\s\S]*?)(?=(?:music\s*label|audio\s*label|label\s*:|singer\s*:|composer\s*:|director|producer|stream|listen|available|itunes|spotify|http|#|\n{3,}|$))", desc, re.IGNORECASE)
+                        if match and len(match.group(1).splitlines()) >= 4:
+                            plain_lyrics_text = match.group(1).strip()
+        except Exception:
+            pass
+
+    # 3. Tier 3: Audio-Guided Alignment
+    if plain_lyrics_text:
+        aligned = _align_plain_lyrics_py(plain_lyrics_text, duration or 210)
+        if aligned:
+            res_data = {
+                "source": "aligned",
+                "lines": aligned
+            }
+            search_cache.set(cache_key, res_data, ttl=86400)
+            resp = jsonify(res_data)
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
+
+    resp = jsonify({"source": "none", "lines": []})
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp
+
+YOUTUBE_TRANSCRIPT_AVAILABLE = True
+
+# ---------------------------------------------------------------------------
 # Health & Status Endpoint
 # ---------------------------------------------------------------------------
 @app.route("/health", methods=["GET"])
@@ -2171,7 +2429,9 @@ def health_check():
         "service": "Mevo Audio Extractor & Search Engine Microservice",
         "ffmpeg_available": bool(ffmpeg_exe),
         "ffmpeg_path": ffmpeg_exe or "not found",
-        "key_pool": key_pool.get_status(),
+        "discovery_pool": discovery_key_pool.get_status(),
+        "search_pool": search_key_pool.get_status(),
+        "key_pool": search_key_pool.get_status(),
         "cache": search_cache.stats(),
         "budget": request_budget.stats(),
         "lyrics_service": YOUTUBE_TRANSCRIPT_AVAILABLE,
@@ -2186,6 +2446,7 @@ if __name__ == "__main__":
     print("=" * 70)
     print(f"Mevo Audio Extractor & Multi-Key Search Service running on http://127.0.0.1:{port}")
     print(f"FFmpeg executable: {ffmpeg_status}")
-    print(f"YouTube Key Pool: {key_pool.get_status()}")
+    print(f"Discovery Key Pool: {discovery_key_pool.get_status()}")
+    print(f"Search Key Pool: {search_key_pool.get_status()}")
     print("=" * 70)
     app.run(host="0.0.0.0", port=port, debug=True)

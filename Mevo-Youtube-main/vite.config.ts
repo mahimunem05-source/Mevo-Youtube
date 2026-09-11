@@ -5,6 +5,7 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { devYouTubePlugin } from "./scripts/dev-youtube-server.ts";
 
+// Live Lyrics & Dedicated YouTube Dev Server
 export default defineConfig({
   plugins: [
     TanStackRouterVite({ target: "react", autoCodeSplitting: true }),

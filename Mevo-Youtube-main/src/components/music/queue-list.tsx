@@ -17,7 +17,11 @@ import { Equalizer } from "./equalizer";
 import { SongCoverImage } from "./song-cover-image";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useTranslation } from "@/hooks/useTranslation";
-import { searchValidMusicVideos, generateRadioQueue } from "@/lib/youtube-radio";
+import {
+  searchValidMusicVideos,
+  searchValidMusicVideosPaginated,
+  generateRadioQueue,
+} from "@/lib/youtube-radio";
 import {
   cleanYouTubeTitle,
   deduplicateYouTubeTracks,
@@ -81,13 +85,41 @@ export function QueueList({ song }: { song: Song }) {
   const [openMenuIndex, setOpenMenuIndex] = useState<number | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
+  const [hasMorePages, setHasMorePages] = useState(true);
 
   // Active track reference (prefer current from context, fallback to song prop)
   const activeTrack = current || song;
 
+  const queryContextRef = useRef<string>("");
+  const activeSeedIdRef = useRef<string>("");
+  const tokenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    tokenRef.current = nextPageToken;
+  }, [nextPageToken]);
+
+  // When active track changes, initialize query context for pagination
+  useEffect(() => {
+    const rawTrackId = (activeTrack?.id || "").replace(/^yt-/, "").trim();
+    if (!rawTrackId || rawTrackId === activeSeedIdRef.current) return;
+    activeSeedIdRef.current = rawTrackId;
+
+    const seedArtist = (activeTrack?.artist || "").replace(/YouTube Artist|Unknown Artist/i, "").trim();
+    const seedTitle = (activeTrack?.title || "").replace(/(\(|\[).*?(\)|\])/g, "").trim();
+    const initialQuery = seedArtist
+      ? `"${seedArtist}" "${seedTitle}" official audio`
+      : `"${seedTitle}" official audio`;
+
+    queryContextRef.current = initialQuery;
+    setNextPageToken(null);
+    tokenRef.current = null;
+    setHasMorePages(true);
+  }, [activeTrack?.id, activeTrack?.title, activeTrack?.artist]);
+
   // Track availability of additional recommendations:
-  // Always available for dynamic YouTube streams, hidden for static/fixed local collections
-  const canLoadMore = !isFixedQueue && queue.length > 0;
+  // Available for dynamic YouTube streams with active pages, hidden for static/fixed local collections
+  const canLoadMore = !isFixedQueue && queue.length > 0 && hasMorePages;
 
   useEffect(() => {
     activeRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -107,12 +139,12 @@ export function QueueList({ song }: { song: Song }) {
   };
 
   /**
-   * Endless Dynamic Music Recommendations Handler
-   * Recursively chains new radio tracks off the LAST track in the current queue,
-   * ensuring infinite discovery without early catalog exhaustion.
+   * Real YouTube API Up Next Pagination Handler
+   * Requests the next page using YouTube Data API's nextPageToken, keeping search query context,
+   * normalizing results, and appending new unique songs to the existing queue.
    */
   const handleLoadMore = async () => {
-    if (isFixedQueue || isLoadingMore) return;
+    if (isFixedQueue || isLoadingMore || !hasMorePages) return;
 
     setIsLoadingMore(true);
     try {
@@ -120,64 +152,97 @@ export function QueueList({ song }: { song: Song }) {
         queue.map((s) => (s.id || "").replace(/^yt-/, "").trim().toLowerCase())
       );
 
-      // 1. Recursive Chaining Seed: use the last track currently in the queue, fallback to activeTrack
-      const lastTrack = queue.length > 0 ? queue[queue.length - 1] : activeTrack;
-      const seedTrack = lastTrack || activeTrack;
-
-      let fetchedCandidates: Song[] = [];
-
-      // 2. Step 1: Radio Generation from Seed Track
-      if (seedTrack && seedTrack.title) {
-        try {
-          fetchedCandidates = await generateRadioQueue(
-            seedTrack,
-            queue.map((s) => s.id)
-          );
-        } catch (radioErr) {
-          console.warn("generateRadioQueue error during load more:", radioErr);
-        }
+      // Determine query context: use queryContextRef or derive from seed track
+      let query = queryContextRef.current;
+      if (!query) {
+        const lastTrack = queue.length > 0 ? queue[queue.length - 1] : activeTrack;
+        const seedTrack = lastTrack || activeTrack;
+        const seedArtist = (seedTrack?.artist || "").replace(/YouTube Artist|Unknown Artist/i, "").trim();
+        const seedTitle = (seedTrack?.title || "").replace(/(\(|\[).*?(\)|\])/g, "").trim();
+        query = seedArtist ? `"${seedArtist}" official audio songs` : `"${seedTitle}" official audio`;
+        queryContextRef.current = query;
       }
 
-      // 3. Step 2: Seed-Aware Targeted Discovery Queries
-      const seedArtist = getSafeString(seedTrack?.artist, "trending");
-      const seedTitle = getSafeString(seedTrack?.title, "music hits");
-      const cleanArtist = seedArtist.replace(/(\(|\[).*?(\)|\])/g, "").trim();
-      const cleanTitle = seedTitle.replace(/(\(|\[).*?(\)|\])/g, "").trim();
+      const currentToken = tokenRef.current;
 
-      const searchQueries = [
-        `songs like "${cleanArtist}" official audio`,
-        `"${cleanArtist}" top hits official audio`,
-        `${cleanTitle} ${cleanArtist} official song`,
-        `top viral indie pop acoustic hits official audio`,
-      ];
-
-      const searchResults = await Promise.allSettled(
-        searchQueries.map((query) => searchValidMusicVideos(query, 12, "Up Next"))
+      // 1. Fetch next page from YouTube API using searchValidMusicVideosPaginated
+      const pageResult = await searchValidMusicVideosPaginated(
+        query,
+        YOUTUBE_BATCH_SIZE,
+        "Up Next",
+        currentToken
       );
 
-      for (const res of searchResults) {
-        if (res.status === "fulfilled" && Array.isArray(res.value)) {
-          fetchedCandidates.push(...res.value);
-        }
-      }
+      let fetchedSongs = pageResult.songs;
+      let newNextPageToken = pageResult.nextPageToken;
 
-      // 4. Filter out any songs already present in the active queue
-      const freshCandidates = fetchedCandidates.filter((track) => {
+      // Filter out any songs already present in the active queue
+      let freshCandidates = fetchedSongs.filter((track) => {
         const rawId = (track.id || "").replace(/^yt-/, "").trim().toLowerCase();
         return rawId && !existingIds.has(rawId);
       });
 
-      // 5. Clean metadata & Deduplicate (including fuzzy core remix/variation deduplication)
+      // If initial page or current query yielded few fresh items and another page exists,
+      // request the subsequent page token automatically to deliver a complete batch
+      if (freshCandidates.length < 4 && newNextPageToken && newNextPageToken !== currentToken) {
+        try {
+          const secondPage = await searchValidMusicVideosPaginated(
+            query,
+            YOUTUBE_BATCH_SIZE,
+            "Up Next",
+            newNextPageToken
+          );
+          if (secondPage.songs.length > 0) {
+            const secondFresh = secondPage.songs.filter((track) => {
+              const rawId = (track.id || "").replace(/^yt-/, "").trim().toLowerCase();
+              return rawId && !existingIds.has(rawId);
+            });
+            freshCandidates = [...freshCandidates, ...secondFresh];
+            newNextPageToken = secondPage.nextPageToken;
+          }
+        } catch {
+          // Gracefully continue with candidates already collected
+        }
+      }
+
+      // If query is completely exhausted and no candidates found, try chaining off the last track
+      if (freshCandidates.length === 0 && (!newNextPageToken || newNextPageToken === currentToken)) {
+        const lastTrack = queue.length > 0 ? queue[queue.length - 1] : activeTrack;
+        const fallbackArtist = (lastTrack?.artist || "").replace(/YouTube Artist|Unknown Artist/i, "").trim();
+        const fallbackQuery = fallbackArtist
+          ? `songs like "${fallbackArtist}" official audio`
+          : `top viral indie pop acoustic hits official audio`;
+
+        if (fallbackQuery !== query) {
+          queryContextRef.current = fallbackQuery;
+          const chainedPage = await searchValidMusicVideosPaginated(
+            fallbackQuery,
+            YOUTUBE_BATCH_SIZE,
+            "Up Next",
+            null
+          );
+          freshCandidates = chainedPage.songs.filter((track) => {
+            const rawId = (track.id || "").replace(/^yt-/, "").trim().toLowerCase();
+            return rawId && !existingIds.has(rawId);
+          });
+          newNextPageToken = chainedPage.nextPageToken;
+        }
+      }
+
+      // 2. Clean metadata & Deduplicate
       const cleanedFresh: Song[] = [];
       for (const track of freshCandidates) {
         const rawTitleStr = getSafeString(track.title, "Untitled Track");
-        const rawArtistStr = getSafeString(track.artist, "Unknown Artist");
+        const rawArtistStr = getSafeString(
+          track.artist || (track as any).channelTitle || (track as any).channel || (track as any).uploader,
+          "YouTube Artist"
+        );
         const parsed = cleanYouTubeTitle(rawTitleStr, rawArtistStr);
 
         cleanedFresh.push({
           ...track,
-          title: parsed.title,
-          artist: parsed.artist || rawArtistStr,
+          title: parsed.title || rawTitleStr,
+          artist: parsed.artist || rawArtistStr || "YouTube Artist",
         });
       }
 
@@ -186,10 +251,18 @@ export function QueueList({ song }: { song: Song }) {
         0.70
       );
 
-      // 6. Append new diverse tracks to the queue
+      // 3. Append new unique tracks to the queue (existing songs remain untouched)
       if (uniqueBatch.length > 0) {
-        const nextSlice = uniqueBatch.slice(0, YOUTUBE_BATCH_SIZE);
-        appendSongsToQueue(nextSlice);
+        appendSongsToQueue(uniqueBatch);
+      }
+
+      // 4. Update pagination token state for the following request
+      setNextPageToken(newNextPageToken);
+      tokenRef.current = newNextPageToken;
+
+      // When YouTube API has no more pages and 0 songs added, mark exhausted
+      if (!newNextPageToken && uniqueBatch.length === 0) {
+        setHasMorePages(false);
       }
     } catch (err) {
       console.warn("Failed to load more songs for queue:", err);
@@ -226,8 +299,32 @@ export function QueueList({ song }: { song: Song }) {
           {queue.map((track, index) => {
             const active = currentIndex === index && current?.id === track.id;
             const menuOpen = openMenuIndex === index;
-            const titleStr = getSafeString(track.title, "Untitled Track");
-            const artistStr = getSafeString(track.artist, "Unknown Artist");
+            const rawArtistVal =
+              track.artist ||
+              (track as any).channelTitle ||
+              (track as any).channel ||
+              (track as any).uploader ||
+              (track as any).videoOwnerChannelTitle ||
+              (track as any).author ||
+              "";
+            let artistStr = getSafeString(rawArtistVal, "");
+            let titleStr = getSafeString(track.title, "");
+
+            if (!artistStr || artistStr === "Unknown Artist" || artistStr === "YouTube Artist") {
+              if (titleStr) {
+                const parsed = cleanYouTubeTitle(titleStr, "");
+                if (parsed.artist && parsed.artist !== "YouTube Artist" && parsed.artist !== "Unknown Artist") {
+                  artistStr = parsed.artist;
+                  titleStr = parsed.title;
+                }
+              }
+            }
+            if (!artistStr) {
+              artistStr = "YouTube Artist";
+            }
+            if (!titleStr) {
+              titleStr = "Untitled Track";
+            }
 
             return (
               <motion.li

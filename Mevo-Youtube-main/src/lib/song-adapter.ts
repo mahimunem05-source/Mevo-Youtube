@@ -25,8 +25,24 @@ export function databaseSongToPlayerSong(
   const section = databaseSectionToPlayerSection(song.section);
   const category = sections.find((item) => item.id === section)?.title ?? "Music";
 
-  const resolvedArtist = (song.artist || song.artist_name || "Unknown Artist").trim();
-  const resolvedCover = (song.cover_image || song.cover_url || song.cover || "").trim() || DEFAULT_COVER;
+  const rawArtist =
+    song.artist ||
+    song.artist_name ||
+    song.channelTitle ||
+    song.channel ||
+    song.uploader ||
+    song.videoOwnerChannelTitle ||
+    song.author ||
+    "Unknown Artist";
+  const resolvedArtist = String(rawArtist).trim() || "Unknown Artist";
+
+  const rawCover =
+    song.cover_image ||
+    song.cover_url ||
+    song.cover ||
+    song.thumbnail ||
+    (song.id ? `https://img.youtube.com/vi/${String(song.id).replace(/^yt-/, "")}/hqdefault.jpg` : "");
+  const resolvedCover = String(rawCover || "").trim() || DEFAULT_COVER;
   const resolvedAudio = song.audio_file || song.audio_url || song.audio || "";
 
   return {

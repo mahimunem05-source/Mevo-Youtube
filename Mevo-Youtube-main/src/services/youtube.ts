@@ -540,8 +540,19 @@ export function isMusicContent(
 /**
  * Cleans YouTube video titles and parses artist / title components
  */
-export function cleanYouTubeTitle(rawTitle: string, channelName: string): { title: string; artist: string } {
-  let decoded = decodeHtmlEntities(rawTitle).trim();
+export function cleanYouTubeTitle(rawTitle: string, channelName?: string): { title: string; artist: string } {
+  let decoded = decodeHtmlEntities(rawTitle || "").trim();
+
+  // Decode channel name and strip topic/vevo/official tags
+  let cleanChannel = decodeHtmlEntities(channelName || "")
+    .replace(/\s*-\s*Topic$/i, "")
+    .replace(/\s*VEVO$/i, "")
+    .replace(/\s*Official(?:\s*Channel)?$/i, "")
+    .trim();
+
+  if (/^(?:Unknown\s*Artist|YouTube\s*Artist|Unknown)$/i.test(cleanChannel)) {
+    cleanChannel = "";
+  }
 
   // Strip hashtags
   decoded = decoded.replace(/#\w+/g, "");
@@ -558,7 +569,7 @@ export function cleanYouTubeTitle(rawTitle: string, channelName: string): { titl
 
   // Strip quotes wrapping around artist or title e.g. Artist - "Title" or "Artist" - "Title"
   // Check if title has "Artist - Song Title" structure
-  const dashSeparators = [" - ", " – ", " — ", " : "];
+  const dashSeparators = [" - ", " – ", " — ", " : ", " | "];
   for (const sep of dashSeparators) {
     if (decoded.includes(sep)) {
       const parts = decoded.split(sep);
@@ -566,9 +577,23 @@ export function cleanYouTubeTitle(rawTitle: string, channelName: string): { titl
         const potentialArtist = parts[0].replace(/^["'“”]+|["'“”]+$/g, "").trim();
         const potentialTitle = parts.slice(1).join(" - ").replace(/^["'“”]+|["'“”]+$/g, "").trim();
         if (potentialArtist.length > 0 && potentialTitle.length > 0) {
+          // If channelName matches the second part (e.g. "Song Title - Artist Name"), invert
+          if (cleanChannel && potentialTitle.toLowerCase() === cleanChannel.toLowerCase()) {
+            return {
+              title: potentialArtist,
+              artist: cleanChannel,
+            };
+          }
+          // If channelName matches the first part (e.g. "Artist Name - Song Title")
+          if (cleanChannel && potentialArtist.toLowerCase() === cleanChannel.toLowerCase()) {
+            return {
+              title: potentialTitle,
+              artist: cleanChannel,
+            };
+          }
           return {
             title: potentialTitle,
-            artist: potentialArtist,
+            artist: potentialArtist || cleanChannel || "YouTube Artist",
           };
         }
       }
@@ -588,17 +613,12 @@ export function cleanYouTubeTitle(rawTitle: string, channelName: string): { titl
     }
   }
 
-  const cleanChannel = decodeHtmlEntities(channelName)
-    .replace(/\s*-\s*Topic$/i, "")
-    .replace(/\s*VEVO$/i, "")
-    .replace(/\s*Official$/i, "")
-    .trim();
-
   const cleanedTitle = decoded.replace(/^["'“”]+|["'“”]+$/g, "").trim();
+  const rawDecoded = decodeHtmlEntities(rawTitle || "").trim();
 
   return {
-    title: cleanedTitle || rawTitle,
-    artist: cleanChannel || "Unknown Artist",
+    title: cleanedTitle || rawDecoded || "YouTube Track",
+    artist: cleanChannel || "YouTube Artist",
   };
 }
 
@@ -1017,8 +1037,15 @@ export function normalizeYouTubeSong(
   video: {
     id: string;
     title: string;
-    channelTitle: string;
-    thumbnail: string;
+    channelTitle?: string;
+    artist?: string;
+    channel?: string;
+    uploader?: string;
+    videoOwnerChannelTitle?: string;
+    author?: string;
+    thumbnail?: string;
+    cover?: string;
+    cover_image?: string;
     duration?: number;
     viewCount?: number;
     publishedAt?: string;
@@ -1029,13 +1056,24 @@ export function normalizeYouTubeSong(
   options: { trending?: boolean } = {}
 ): MevoNormalizedSong {
   const cleanId = (video.id || "").replace(/^yt-/, "").trim();
-  const { title, artist } = cleanYouTubeTitle(video.title, video.channelTitle);
+  const rawChannel = (
+    video.channelTitle ||
+    video.artist ||
+    video.channel ||
+    video.uploader ||
+    video.videoOwnerChannelTitle ||
+    video.author ||
+    ""
+  ).trim();
+  const rawTitle = (video.title || "").trim();
+  const { title, artist } = cleanYouTubeTitle(rawTitle, rawChannel);
   const streamUrl = getYouTubeStreamUrl(cleanId);
   const year = video.publishedAt ? new Date(video.publishedAt).getFullYear() : new Date().getFullYear();
   const duration = typeof video.duration === "number" && video.duration > 0 ? Math.round(video.duration) : 210;
-  const bestCover = video.thumbnail || `https://img.youtube.com/vi/${cleanId}/hqdefault.jpg`;
+  const bestCover = video.thumbnail || video.cover || video.cover_image || `https://img.youtube.com/vi/${cleanId}/hqdefault.jpg`;
 
-  const officialScore = getOfficialContentScore(video.channelTitle, video.title);
+  const channelForScore = rawChannel || artist;
+  const officialScore = getOfficialContentScore(channelForScore, rawTitle || title);
   const isOfficial = officialScore >= 60;
   const titleLower = video.title.toLowerCase();
   const musicType = titleLower.includes("official audio") || video.channelTitle.toLowerCase().includes("- topic")
@@ -1175,7 +1213,7 @@ async function fetchFromExtractor(
 ): Promise<Song[]> {
   try {
     const baseUrl = getExtractorBaseUrl();
-    const endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(query)}&limit=${limit}`;
+    const endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(query)}&limit=${limit}&type=discovery&pool=discovery`;
     const res = await fetch(endpoint);
     if (!res.ok) return [];
 
@@ -1230,7 +1268,7 @@ export async function fetchYouTubeVideoDetails(videoIds: string[]): Promise<Map<
   return fetchWithSingleFlight(cacheKey, async () => {
     const baseUrl = getExtractorBaseUrl();
     try {
-      const endpoint = `${baseUrl}/api/youtube/videos?ids=${encodeURIComponent(videoIds.join(","))}`;
+      const endpoint = `${baseUrl}/api/youtube/videos?ids=${encodeURIComponent(videoIds.join(","))}&pool=discovery`;
       const res = await fetch(endpoint);
       if (res.ok) {
         const data = await res.json();
@@ -1558,7 +1596,7 @@ export async function fetchYouTubeCategoryTracks(
       if (collectedSongs.length < targetCount && !gotNewCandidatesOnPage && !nextPageTokenFromResponse) {
         try {
           const cleanQuery = currentQuery.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
-          const fallbackEndpoint: string = `${baseUrl}/api/search?q=${encodeURIComponent(cleanQuery)}&limit=50${pageParam}`;
+          const fallbackEndpoint: string = `${baseUrl}/api/search?q=${encodeURIComponent(cleanQuery)}&limit=50&type=discovery&pool=discovery${pageParam}`;
           const sRes: Response = await fetch(fallbackEndpoint);
           if (sRes.ok) {
             const sData: any = await sRes.json();
@@ -1616,20 +1654,32 @@ export async function fetchYouTubeCategoryTracks(
   });
 }
 
+export interface PaginatedYouTubeSearchResults {
+  items: YouTubeSearchResult[];
+  nextPageToken: string | null;
+  count: number;
+}
+
 /**
- * Searches YouTube for tracks/videos matching the query string via Backend Search API
+ * Searches YouTube for tracks with real YouTube API pagination (nextPageToken) support
  */
-export async function searchYouTube(query: string, maxResults = 12): Promise<YouTubeSearchResult[]> {
+export async function searchYouTubePaginated(
+  query: string,
+  maxResults = 12,
+  pageToken?: string | null,
+  pool: "discovery" | "search" = "search"
+): Promise<PaginatedYouTubeSearchResults> {
   const trimmed = query.trim();
   if (!trimmed) {
-    return [];
+    return { items: [], nextPageToken: null, count: 0 };
   }
 
-  const cacheKey = `search:${trimmed.toLowerCase()}:${maxResults}`;
+  const cacheKey = `search-paginated:${pool}:${trimmed.toLowerCase()}:${maxResults}:${pageToken || "0"}`;
   return fetchWithSingleFlight(cacheKey, async () => {
     try {
       const baseUrl = getExtractorBaseUrl();
-      const endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(trimmed)}&limit=${maxResults}`;
+      const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+      const endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(trimmed)}&limit=${maxResults}&type=${pool}&pool=${pool}${pageParam}`;
       const res = await fetch(endpoint);
       if (res.ok) {
         const data = await res.json();
@@ -1637,7 +1687,9 @@ export async function searchYouTube(query: string, maxResults = 12): Promise<You
           .map((item: any) => ({
             id: item.id,
             title: decodeHtmlEntities(item.title || ""),
-            channel: decodeHtmlEntities(item.artist || item.channelTitle || item.uploader || ""),
+            channel: decodeHtmlEntities(
+              item.artist || item.channelTitle || item.channel || item.uploader || item.videoOwnerChannelTitle || ""
+            ),
             thumbnail: item.thumbnail || `https://img.youtube.com/vi/${item.id}/hqdefault.jpg`,
             description: item.description || "",
             publishedAt: item.publishedAt,
@@ -1650,14 +1702,31 @@ export async function searchYouTube(query: string, maxResults = 12): Promise<You
           )
           .sort((a: YouTubeSearchResult, b: YouTubeSearchResult) => getOfficialContentScore(b.channel, b.title) - getOfficialContentScore(a.channel, a.title));
 
-        return deduplicateYouTubeTracks(results).slice(0, maxResults);
+        const deduped = deduplicateYouTubeTracks(results).slice(0, maxResults);
+        return {
+          items: deduped,
+          nextPageToken: data.nextPageToken || null,
+          count: deduped.length,
+        };
       }
     } catch (err) {
-      console.error("[searchYouTube] Backend search error:", err);
+      console.error("[searchYouTubePaginated] Backend search error:", err);
     }
 
-    return [];
+    return { items: [], nextPageToken: null, count: 0 };
   });
+}
+
+/**
+ * Searches YouTube for tracks/videos matching the query string via Backend Search API
+ */
+export async function searchYouTube(
+  query: string,
+  maxResults = 12,
+  pageToken?: string | null
+): Promise<YouTubeSearchResult[]> {
+  const res = await searchYouTubePaginated(query, maxResults, pageToken, "search");
+  return res.items;
 }
 
 export interface PaginatedYouTubeSongs {
@@ -1748,7 +1817,7 @@ export async function fetchPaginatedYouTubeCategoryTracks(
     if (accumulated.length === 0) {
       try {
         const cleanSearchQuery = activeQuery.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
-        let endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(cleanSearchQuery)}&limit=${Math.max(targetCount, 25)}`;
+        let endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(cleanSearchQuery)}&limit=${Math.max(targetCount, 25)}&type=discovery&pool=discovery`;
         if (rawPageToken) {
           endpoint += `&pageToken=${encodeURIComponent(rawPageToken)}`;
         }

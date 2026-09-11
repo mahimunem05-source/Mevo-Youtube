@@ -71,7 +71,7 @@ export async function fetchYouTubeSearchTracks(
   try {
     const extractorUrl = getExtractorBaseUrl();
     const cleanSearchQuery = query.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
-    let endpoint = `${extractorUrl}/api/search?q=${encodeURIComponent(cleanSearchQuery)}&limit=${limit}`;
+    let endpoint = `${extractorUrl}/api/search?q=${encodeURIComponent(cleanSearchQuery)}&limit=${limit}&type=discovery&pool=discovery`;
     if (pageToken) {
       endpoint += `&pageToken=${encodeURIComponent(pageToken)}`;
     }

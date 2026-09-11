@@ -12,7 +12,7 @@ import { useNavigationHistory } from "@/lib/navigation-history";
 import { useTranslation } from "@/hooks/useTranslation";
 import { cn } from "@/lib/utils";
 import { SongCoverImage } from "@/components/music/song-cover-image";
-import { searchYouTube, type YouTubeSearchResult } from "@/services/youtube";
+import { searchYouTube, searchYouTubePaginated, type YouTubeSearchResult } from "@/services/youtube";
 import {
   detectTrackCategory,
   youTubeResultToSong,
@@ -116,6 +116,7 @@ export function LiveSearch({
   const [results, setResults] = useState<Song[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [ytResults, setYtResults] = useState<YouTubeSearchResult[]>([]);
+  const [ytNextPageToken, setYtNextPageToken] = useState<string | null>(null);
   const [isSearchingYouTube, setIsSearchingYouTube] = useState(false);
   const [isFetchingMoreYt, setIsFetchingMoreYt] = useState(false);
   const [hasMoreYt, setHasMoreYt] = useState(true);
@@ -168,11 +169,12 @@ export function LiveSearch({
     if (cached && Date.now() - cached.timestamp < 10 * 60 * 1000) {
       setResults(cached.local);
       setYtResults(cached.yt);
+      setYtNextPageToken(cached.ytToken || null);
       setActive(0);
       setIsSearching(false);
       setIsSearchingYouTube(false);
       setIsFetchingMoreYt(false);
-      setHasMoreYt(true);
+      setHasMoreYt(Boolean(cached.ytToken) || cached.yt.length >= 6);
       return;
     }
 
@@ -192,9 +194,9 @@ export function LiveSearch({
               return [];
             }),
             Promise.resolve(searchStaticSongs(normalizedQuery, 6)),
-            searchYouTube(normalizedQuery, 8).catch((err) => {
+            searchYouTubePaginated(normalizedQuery, 8, null, "search").catch((err) => {
               console.error("YouTube Search Failed:", err);
-              return [];
+              return { items: [], nextPageToken: null, count: 0 };
             }),
           ]);
 
@@ -205,17 +207,24 @@ export function LiveSearch({
           const demoSongs = staticRes.status === "fulfilled" ? staticRes.value : [];
           const mergedLocal = mergePlayerSongs(uploadedSongs, demoSongs).slice(0, 6);
 
-          const youtubeMatches =
-            ytRes.status === "fulfilled" && Array.isArray(ytRes.value) ? ytRes.value : [];
+          const youtubeData =
+            ytRes.status === "fulfilled" && ytRes.value
+              ? ytRes.value
+              : { items: [], nextPageToken: null, count: 0 };
+          const youtubeMatches = Array.isArray(youtubeData.items) ? youtubeData.items : [];
+          const nextToken = youtubeData.nextPageToken || null;
 
           searchCacheMap.current.set(cacheKey, {
             local: mergedLocal,
             yt: youtubeMatches,
+            ytToken: nextToken,
             timestamp: Date.now(),
           });
 
           setResults(mergedLocal);
           setYtResults(youtubeMatches);
+          setYtNextPageToken(nextToken);
+          setHasMoreYt(Boolean(nextToken) || youtubeMatches.length >= 6);
           setActive(0);
         } catch (error) {
           if (!cancelled) {
@@ -351,16 +360,15 @@ export function LiveSearch({
 
     setIsFetchingMoreYt(true);
     try {
-      const nextLimit = Math.min(ytResults.length + 8, 40);
-      const moreMatches = await searchYouTube(normalizedQuery, nextLimit);
-      if (moreMatches.length > 0) {
+      const pageResult = await searchYouTubePaginated(normalizedQuery, 8, ytNextPageToken, "search");
+      if (pageResult.items.length > 0) {
         const existingIds = new Set(ytResults.map((r) => r.id));
-        const fresh = moreMatches.filter((r) => !existingIds.has(r.id));
+        const fresh = pageResult.items.filter((r) => !existingIds.has(r.id));
         if (fresh.length > 0) {
           setYtResults((prev) => [...prev, ...fresh]);
-        } else {
-          setHasMoreYt(false);
         }
+        setYtNextPageToken(pageResult.nextPageToken);
+        setHasMoreYt(Boolean(pageResult.nextPageToken));
       } else {
         setHasMoreYt(false);
       }

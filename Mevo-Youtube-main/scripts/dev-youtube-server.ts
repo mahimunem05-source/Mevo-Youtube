@@ -1,6 +1,7 @@
 import type { Plugin, ViteDevServer } from "vite";
 import fs from "node:fs";
 import path from "node:path";
+import { parseLrc, alignPlainLyrics, processLyricsLines, cleanSongTitle } from "../src/services/lyricsService.ts";
 
 interface CacheEntry<T> {
   data: T;
@@ -28,35 +29,20 @@ class MemoryCache {
   }
 }
 
-class DevKeyPool {
+class SingleKeyPool {
+  readonly name: string;
   private keys: string[] = [];
   private currentIdx = 0;
   private exhausted = new Map<string, number>();
 
-  constructor() {
-    this.reload();
+  constructor(name: string, keys: string[] = []) {
+    this.name = name;
+    this.keys = keys;
   }
 
-  reload() {
-    try {
-      const envPath = path.resolve(process.cwd(), ".env.local");
-      if (fs.existsSync(envPath)) {
-        const content = fs.readFileSync(envPath, "utf-8");
-        const match = content.match(/YOUTUBE_API_KEYS=["']?([^"'\r\n]+)/);
-        if (match && match[1]) {
-          this.keys = match[1]
-            .split(/[,;\s]+/)
-            .map((k) => k.trim().replace(/^["']|["']$/g, ""))
-            .filter(Boolean);
-        }
-      }
-    } catch {
-      // ignore
-    }
-    if (this.keys.length === 0 && process.env.YOUTUBE_API_KEYS) {
-      this.keys = process.env.YOUTUBE_API_KEYS.split(/[,;\s]+/).map((k) => k.trim()).filter(Boolean);
-    }
-    console.log(`[Vite Dev YouTube] Loaded ${this.keys.length} API key(s) from .env.local`);
+  setKeys(keys: string[]) {
+    this.keys = keys;
+    this.currentIdx = 0;
   }
 
   getActiveKey(): string | null {
@@ -72,13 +58,131 @@ class DevKeyPool {
       this.currentIdx = idx;
       return key;
     }
-    return this.keys[0] || null;
+    return null;
   }
 
-  markExhausted(key: string) {
+  markExhausted(key: string, reason = "Quota Exceeded") {
     this.exhausted.set(key, Date.now());
     this.currentIdx = (this.currentIdx + 1) % Math.max(1, this.keys.length);
-    console.warn(`[Vite Dev YouTube] Key ${key.slice(0, 8)}... exhausted, rotating to next key`);
+    const activeRemaining = this.getActiveKeyCount();
+    console.warn(
+      `[Vite Dev YouTube][${this.name} Pool] Key ${key.slice(0, 8)}... marked EXHAUSTED (${reason}). Active remaining: ${activeRemaining}/${this.keys.length}`
+    );
+  }
+
+  getActiveKeyCount(): number {
+    const now = Date.now();
+    return this.keys.filter((k) => {
+      const exp = this.exhausted.get(k);
+      return !exp || now - exp >= 3600 * 1000;
+    }).length;
+  }
+
+  getStatus() {
+    const now = Date.now();
+    const active = this.keys.filter((k) => {
+      const exp = this.exhausted.get(k);
+      return !exp || now - exp >= 3600 * 1000;
+    });
+    return {
+      name: this.name,
+      total_keys: this.keys.length,
+      active_keys: active.length,
+      exhausted_keys: this.keys.length - active.length,
+      has_available_key: active.length > 0,
+      keys_preview: this.keys.map((k) => (k.length > 8 ? `${k.slice(0, 6)}...${k.slice(-4)}` : "***")),
+    };
+  }
+}
+
+class DevKeyPoolManager {
+  readonly discoveryPool = new SingleKeyPool("Song Discovery");
+  readonly searchPool = new SingleKeyPool("Search");
+
+  constructor() {
+    this.reload();
+  }
+
+  reload() {
+    let discoveryKeys: string[] = [];
+    let searchKeys: string[] = [];
+    let fallbackKeys: string[] = [];
+
+    try {
+      const envPath = path.resolve(process.cwd(), ".env.local");
+      if (fs.existsSync(envPath)) {
+        const content = fs.readFileSync(envPath, "utf-8");
+
+        const discMatch = content.match(/SONG_DISCOVERY_API_KEYS=["']?([^"'\r\n]+)/);
+        if (discMatch && discMatch[1]) {
+          discoveryKeys = this.parseKeys(discMatch[1]);
+        }
+
+        const searchMatch = content.match(/SEARCH_API_KEYS=["']?([^"'\r\n]+)/);
+        if (searchMatch && searchMatch[1]) {
+          searchKeys = this.parseKeys(searchMatch[1]);
+        }
+
+        const match = content.match(/YOUTUBE_API_KEYS=["']?([^"'\r\n]+)/);
+        if (match && match[1]) {
+          fallbackKeys = this.parseKeys(match[1]);
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if (discoveryKeys.length === 0 && process.env.SONG_DISCOVERY_API_KEYS) {
+      discoveryKeys = this.parseKeys(process.env.SONG_DISCOVERY_API_KEYS);
+    }
+    if (searchKeys.length === 0 && process.env.SEARCH_API_KEYS) {
+      searchKeys = this.parseKeys(process.env.SEARCH_API_KEYS);
+    }
+    if (fallbackKeys.length === 0 && process.env.YOUTUBE_API_KEYS) {
+      fallbackKeys = this.parseKeys(process.env.YOUTUBE_API_KEYS);
+    }
+
+    // Partition fallback keys if explicit pools were not specified
+    if (discoveryKeys.length === 0 && searchKeys.length === 0 && fallbackKeys.length > 0) {
+      if (fallbackKeys.length >= 2) {
+        searchKeys = [fallbackKeys[fallbackKeys.length - 1]];
+        discoveryKeys = fallbackKeys.slice(0, fallbackKeys.length - 1);
+      } else {
+        discoveryKeys = [...fallbackKeys];
+        searchKeys = [...fallbackKeys];
+      }
+    } else if (discoveryKeys.length === 0 && fallbackKeys.length > 0) {
+      discoveryKeys = fallbackKeys.filter((k) => !searchKeys.includes(k));
+      if (discoveryKeys.length === 0) discoveryKeys = [...fallbackKeys];
+    } else if (searchKeys.length === 0 && fallbackKeys.length > 0) {
+      searchKeys = fallbackKeys.filter((k) => !discoveryKeys.includes(k));
+      if (searchKeys.length === 0) searchKeys = [...fallbackKeys];
+    }
+
+    this.discoveryPool.setKeys(discoveryKeys);
+    this.searchPool.setKeys(searchKeys);
+
+    console.log(
+      `[Vite Dev YouTube] Dedicated Pools Initialized: Song Discovery=${discoveryKeys.length} key(s), Search=${searchKeys.length} key(s)`
+    );
+  }
+
+  private parseKeys(raw: string): string[] {
+    return raw
+      .split(/[,;\s]+/)
+      .map((k) => k.trim().replace(/^["']|["']$/g, ""))
+      .filter(Boolean);
+  }
+
+  getPool(poolName: "discovery" | "search"): SingleKeyPool {
+    return poolName === "discovery" ? this.discoveryPool : this.searchPool;
+  }
+
+  getStatus() {
+    return {
+      discovery_pool: this.discoveryPool.getStatus(),
+      search_pool: this.searchPool.getStatus(),
+    };
   }
 }
 
@@ -165,32 +269,106 @@ async function getDirectAudioUrl(videoId: string): Promise<string | null> {
 }
 
 export function devYouTubePlugin(): Plugin {
-  const pool = new DevKeyPool();
+  const poolManager = new DevKeyPoolManager();
   const cache = new MemoryCache();
 
-  async function fetchWithKey(urlBuilder: (key: string) => string): Promise<any> {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const key = pool.getActiveKey();
-      if (!key) throw new Error("No YouTube API keys available in .env.local");
-      const url = urlBuilder(key);
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.error) {
-        const code = data.error.code;
-        const msg = (data.error.message || "").toLowerCase();
-        const status = data.error.status || "";
-        if (code === 403 || code === 429 || status === "RESOURCE_EXHAUSTED" || msg.includes("quota") || msg.includes("exceeded")) {
-          pool.markExhausted(key);
+  async function fetchWithKey(
+    poolName: "discovery" | "search",
+    urlBuilder: (key: string) => string
+  ): Promise<any> {
+    const primaryPool = poolManager.getPool(poolName);
+    const fallbackPool = poolManager.getPool(poolName === "discovery" ? "search" : "discovery");
+
+    // 1. Try keys from the requested primary pool
+    const primaryTotal = Math.max(1, primaryPool.getStatus().total_keys);
+    for (let attempt = 0; attempt < primaryTotal; attempt++) {
+      const key = primaryPool.getActiveKey();
+      if (!key) break;
+      try {
+        const url = urlBuilder(key);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.error) {
+          const code = data.error.code;
+          const msg = (data.error.message || "").toLowerCase();
+          const status = data.error.status || "";
+          if (
+            code === 403 ||
+            code === 429 ||
+            status === "RESOURCE_EXHAUSTED" ||
+            msg.includes("quota") ||
+            msg.includes("exceeded")
+          ) {
+            primaryPool.markExhausted(key, `HTTP ${code}: ${data.error.message}`);
+            continue;
+          }
+          throw new Error(data.error.message || `YouTube API error ${code}`);
+        }
+        return data;
+      } catch (err: any) {
+        if (
+          err.message &&
+          (err.message.includes("quota") ||
+            err.message.includes("exceeded") ||
+            err.message.includes("RESOURCE_EXHAUSTED"))
+        ) {
           continue;
         }
-        throw new Error(data.error.message || `YouTube API error ${code}`);
+        throw err;
       }
-      return data;
     }
-    throw new Error("All YouTube API keys exhausted or rate-limited");
+
+    // 2. Emergency fallback: If all keys in primary pool are exhausted, borrow from the other pool
+    const fallbackTotal = Math.max(1, fallbackPool.getStatus().total_keys);
+    for (let attempt = 0; attempt < fallbackTotal; attempt++) {
+      const key = fallbackPool.getActiveKey();
+      if (!key) break;
+      try {
+        console.warn(
+          `[Vite Dev YouTube] Primary ${primaryPool.name} pool keys exhausted. Borrowing active key ${key.slice(0, 8)}... from ${fallbackPool.name} pool.`
+        );
+        const url = urlBuilder(key);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.error) {
+          const code = data.error.code;
+          const msg = (data.error.message || "").toLowerCase();
+          const status = data.error.status || "";
+          if (
+            code === 403 ||
+            code === 429 ||
+            status === "RESOURCE_EXHAUSTED" ||
+            msg.includes("quota") ||
+            msg.includes("exceeded")
+          ) {
+            fallbackPool.markExhausted(key, `HTTP ${code}: ${data.error.message}`);
+            continue;
+          }
+          throw new Error(data.error.message || `YouTube API error ${code}`);
+        }
+        return data;
+      } catch (err: any) {
+        if (
+          err.message &&
+          (err.message.includes("quota") ||
+            err.message.includes("exceeded") ||
+            err.message.includes("RESOURCE_EXHAUSTED"))
+        ) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw new Error(
+      `[${primaryPool.name} Pool] All YouTube API keys (including failover pool) are exhausted or unavailable`
+    );
   }
 
-  async function getVideoDetails(videoIds: string[]): Promise<Map<string, any>> {
+  async function getVideoDetails(
+    videoIds: string[],
+    poolName: "discovery" | "search" = "discovery"
+  ): Promise<Map<string, any>> {
     const detailsMap = new Map<string, any>();
     if (videoIds.length === 0) return detailsMap;
 
@@ -202,6 +380,7 @@ export function devYouTubePlugin(): Plugin {
     for (const batch of batches) {
       try {
         const data = await fetchWithKey(
+          poolName,
           (key) =>
             `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,status&id=${batch.join(",")}&key=${key}`
         );
@@ -223,7 +402,7 @@ export function devYouTubePlugin(): Plugin {
           detailsMap.set(id, {
             id,
             title: snippet.title || "",
-            channelTitle: snippet.channelTitle || "",
+            channelTitle: snippet.channelTitle || snippet.videoOwnerChannelTitle || "",
             thumbnail: thumb,
             duration,
             viewCount,
@@ -234,7 +413,7 @@ export function devYouTubePlugin(): Plugin {
           });
         }
       } catch (err) {
-        console.warn("[Vite Dev YouTube] Error fetching video details batch:", err);
+        console.warn(`[Vite Dev YouTube][${poolName}] Error fetching video details batch:`, err);
       }
     }
     return detailsMap;
@@ -248,7 +427,7 @@ export function devYouTubePlugin(): Plugin {
         const urlObj = new URL(req.url || "/", "http://localhost");
         const pathname = urlObj.pathname;
 
-        // 1. /api/youtube/trending
+        // 1. /api/youtube/trending (Pool A: Song Discovery)
         if (pathname === "/api/youtube/trending" || pathname === "/api/trending") {
           const region = urlObj.searchParams.get("region") || "BD";
           const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "15", 10)));
@@ -267,6 +446,7 @@ export function devYouTubePlugin(): Plugin {
           try {
             const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
             const data = await fetchWithKey(
+              "discovery",
               (key) =>
                 `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,status&chart=mostPopular&videoCategoryId=10&regionCode=${encodeURIComponent(region)}&maxResults=50${pageParam}&key=${key}`
             );
@@ -323,7 +503,7 @@ export function devYouTubePlugin(): Plugin {
           }
         }
 
-        // 2. /api/youtube/category
+        // 2. /api/youtube/category (Pool A: Song Discovery)
         if (pathname === "/api/youtube/category" || pathname === "/api/category") {
           const query = urlObj.searchParams.get("q") || "";
           const order = urlObj.searchParams.get("order") || "viewCount";
@@ -343,27 +523,46 @@ export function devYouTubePlugin(): Plugin {
           try {
             const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
             const data = await fetchWithKey(
+              "discovery",
               (key) =>
                 `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&order=${encodeURIComponent(order)}&maxResults=50${pageParam}&key=${key}`
             );
             const videoIds = (data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
-            const details = await getVideoDetails(videoIds);
+            const snippetMap = new Map<string, any>();
+            for (const it of data.items || []) {
+              const vid = it.id?.videoId || it.id;
+              if (vid) snippetMap.set(vid, it.snippet || {});
+            }
+            const details = await getVideoDetails(videoIds, "discovery");
 
             const songs = videoIds
               .map((id: string) => {
                 const d = details.get(id);
+                const snip = snippetMap.get(id) || {};
+                const title = d?.title || snip.title || "";
+                const artist = d?.channelTitle || snip.channelTitle || snip.videoOwnerChannelTitle || "";
+                const thumb =
+                  d?.thumbnail ||
+                  snip.thumbnails?.maxres?.url ||
+                  snip.thumbnails?.high?.url ||
+                  snip.thumbnails?.medium?.url ||
+                  snip.thumbnails?.default?.url ||
+                  `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+                const desc = d?.description || snip.description || "";
+                const publishedAt = d?.publishedAt || snip.publishedAt || "";
+
                 return {
                   id,
-                  title: d?.title || "",
-                  artist: d?.channelTitle || "",
-                  thumbnail: d?.thumbnail || `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
+                  title,
+                  artist,
+                  thumbnail: thumb,
                   duration: d?.duration || 0,
                   viewCount: d?.viewCount || 0,
-                  publishedAt: d?.publishedAt || "",
+                  publishedAt,
                   section: sectionId,
                   embeddable: d?.embeddable !== false,
                   isMadeForKids: Boolean(d?.isMadeForKids),
-                  description: d?.description || "",
+                  description: desc,
                 };
               })
               .filter((s: any) => {
@@ -382,18 +581,37 @@ export function devYouTubePlugin(): Plugin {
             return;
           } catch (err: any) {
             console.error("[Vite Dev YouTube] Category error:", err.message);
+            try {
+              const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+              const fallbackUrl = `https://mevo-extractor.onrender.com/api/search?q=${encodeURIComponent(query)}&limit=${limit}${pageParam}`;
+              const fRes = await fetch(fallbackUrl);
+              if (fRes.ok) {
+                const fData = await fRes.json();
+                const songs = (fData.items || []).map((it: any) => ({
+                  ...it,
+                  section: sectionId,
+                }));
+                res.setHeader("Content-Type", "application/json");
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.end(JSON.stringify({ songs, nextPageToken: fData.nextPageToken || null, count: songs.length }));
+                return;
+              }
+            } catch {
+              // fallback failed
+            }
             res.statusCode = 500;
             res.end(JSON.stringify({ error: err.message }));
             return;
           }
         }
 
-        // 3. /api/youtube/videos
+        // 3. /api/youtube/videos (Pool configurable: defaults to discovery)
         if (pathname === "/api/youtube/videos" || pathname === "/api/videos") {
           const idsParam = urlObj.searchParams.get("ids") || "";
+          const poolParam: "discovery" | "search" = urlObj.searchParams.get("pool") === "search" ? "search" : "discovery";
           const videoIds = idsParam.split(",").map((s) => s.trim()).filter(Boolean);
           try {
-            const detailsMap = await getVideoDetails(videoIds);
+            const detailsMap = await getVideoDetails(videoIds, poolParam);
             const items: Record<string, any> = {};
             for (const [id, d] of detailsMap.entries()) {
               items[id] = d;
@@ -409,12 +627,19 @@ export function devYouTubePlugin(): Plugin {
           }
         }
 
-        // 4. /api/search
+        // 4. /api/search (Routes to Pool A for discovery requests, Pool B for user searches)
         if (pathname === "/api/search") {
           const query = urlObj.searchParams.get("q") || "";
           const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "12", 10)));
           const pageToken = urlObj.searchParams.get("pageToken") || "";
-          const cacheKey = `search:${query}:${limit}:${pageToken}`;
+          const poolParam = urlObj.searchParams.get("pool") || "";
+          const typeParam = urlObj.searchParams.get("type") || "";
+
+          // Explicit separation: discovery features use Pool A; live user search uses Pool B
+          const isDiscovery = poolParam === "discovery" || typeParam === "discovery" || typeParam === "category";
+          const targetPool: "discovery" | "search" = isDiscovery ? "discovery" : "search";
+
+          const cacheKey = `search:${targetPool}:${query}:${limit}:${pageToken}`;
 
           const cached = cache.get(cacheKey);
           if (cached) {
@@ -428,27 +653,46 @@ export function devYouTubePlugin(): Plugin {
             const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
             const searchLimit = Math.min(50, Math.max(limit * 2, 25));
             const data = await fetchWithKey(
+              targetPool,
               (key) =>
                 `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&maxResults=${searchLimit}${pageParam}&key=${key}`
             );
             const videoIds = (data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
-            const details = await getVideoDetails(videoIds);
+            const snippetMap = new Map<string, any>();
+            for (const it of data.items || []) {
+              const vid = it.id?.videoId || it.id;
+              if (vid) snippetMap.set(vid, it.snippet || {});
+            }
+            const details = await getVideoDetails(videoIds, targetPool);
 
             const items = videoIds
               .map((id: string) => {
                 const d = details.get(id);
+                const snip = snippetMap.get(id) || {};
+                const title = d?.title || snip.title || "";
+                const artist = d?.channelTitle || snip.channelTitle || snip.videoOwnerChannelTitle || "";
+                const thumb =
+                  d?.thumbnail ||
+                  snip.thumbnails?.maxres?.url ||
+                  snip.thumbnails?.high?.url ||
+                  snip.thumbnails?.medium?.url ||
+                  snip.thumbnails?.default?.url ||
+                  `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+                const desc = d?.description || snip.description || "";
+                const publishedAt = d?.publishedAt || snip.publishedAt || "";
+
                 return {
                   id,
-                  title: d?.title || "",
-                  artist: d?.channelTitle || "",
-                  thumbnail: d?.thumbnail || `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
+                  title,
+                  artist,
+                  thumbnail: thumb,
                   duration: d?.duration || 0,
                   viewCount: d?.viewCount || 0,
-                  publishedAt: d?.publishedAt || "",
+                  publishedAt,
                   stream_url: `https://mevo-extractor.onrender.com/stream?id=${id}`,
                   embeddable: d?.embeddable !== false,
                   isMadeForKids: Boolean(d?.isMadeForKids),
-                  description: d?.description || "",
+                  description: desc,
                 };
               })
               .filter((it: any) => {
@@ -459,16 +703,30 @@ export function devYouTubePlugin(): Plugin {
               })
               .slice(0, limit);
 
-            const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api", query };
+            const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api", query, pool: targetPool };
             cache.set(cacheKey, result, 7200); // 2 hour TTL
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(result));
             return;
           } catch (err: any) {
-            console.error("[Vite Dev YouTube] Search error:", err.message);
+            console.error(`[Vite Dev YouTube][${targetPool}] Search error:`, err.message);
+            try {
+              const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+              const fallbackUrl = `https://mevo-extractor.onrender.com/api/search?q=${encodeURIComponent(query)}&limit=${limit}${pageParam}`;
+              const fRes = await fetch(fallbackUrl);
+              if (fRes.ok) {
+                const fData = await fRes.json();
+                res.setHeader("Content-Type", "application/json");
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.end(JSON.stringify(fData));
+                return;
+              }
+            } catch {
+              // fallback failed
+            }
             res.statusCode = 500;
-            res.end(JSON.stringify({ error: err.message }));
+            res.end(JSON.stringify({ error: err.message, pool: targetPool }));
             return;
           }
         }
@@ -538,6 +796,135 @@ export function devYouTubePlugin(): Plugin {
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Access-Control-Allow-Origin", "*");
           res.end(JSON.stringify({ tracks: [], source: "none" }));
+          return;
+        }
+
+        // 7. /api/lyrics & /api/lyrics/youtube (Multi-tier synced & aligned lyrics pipeline)
+        if (pathname === "/api/lyrics" || pathname === "/api/lyrics/youtube") {
+          const videoId = (urlObj.searchParams.get("videoId") || urlObj.searchParams.get("id") || "").replace(/^yt-/, "").trim();
+          const title = urlObj.searchParams.get("title") || "";
+          const artist = urlObj.searchParams.get("artist") || "";
+          const duration = parseFloat(urlObj.searchParams.get("duration") || "0") || 0;
+
+          if (!videoId && !title) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: "Missing videoId or title" }));
+            return;
+          }
+
+          const lyricsCacheKey = `lyrics:${videoId || title}`;
+          const cachedLyrics = cache.get(lyricsCacheKey);
+          if (cachedLyrics) {
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify(cachedLyrics));
+            return;
+          }
+
+          try {
+            const cleanT = cleanSongTitle(title);
+            const cleanA = artist.replace(/\s*-\s*topic$/i, "").trim();
+
+            // Tier 1: Multi-query LRCLIB synced lyrics
+            const searchQueries = [
+              cleanA && cleanA !== "Unknown Artist" ? `${cleanT} ${cleanA}` : cleanT,
+              cleanA.includes(",") ? `${cleanT} ${cleanA.split(",")[0].trim()}` : "",
+              cleanA.includes("&") ? `${cleanT} ${cleanA.split("&")[0].trim()}` : "",
+              cleanT,
+            ].filter(Boolean);
+
+            let syncedLines: any[] = [];
+            let plainLyricsText = "";
+
+            for (const q of searchQueries) {
+              try {
+                const lrcRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`, {
+                  headers: { "User-Agent": "MevoMusic/1.0" },
+                  signal: AbortSignal.timeout(3000),
+                });
+                if (lrcRes.ok) {
+                  const data = await lrcRes.json();
+                  if (Array.isArray(data) && data.length > 0) {
+                    const withSynced = data.find((r: any) => r.syncedLyrics && r.syncedLyrics.trim().length > 0);
+                    if (withSynced) {
+                      syncedLines = parseLrc(withSynced.syncedLyrics);
+                      if (syncedLines.length > 0) break;
+                    }
+                    if (!plainLyricsText) {
+                      const withPlain = data.find((r: any) => r.plainLyrics && r.plainLyrics.trim().length > 0);
+                      if (withPlain) plainLyricsText = withPlain.plainLyrics;
+                    }
+                  }
+                }
+              } catch {
+                // try next query
+              }
+            }
+
+            if (syncedLines.length > 0) {
+              const processed = {
+                source: "lrclib",
+                lines: processLyricsLines(syncedLines),
+              };
+              cache.set(lyricsCacheKey, processed, 86400); // 24-hr TTL
+              res.setHeader("Content-Type", "application/json");
+              res.setHeader("Access-Control-Allow-Origin", "*");
+              res.end(JSON.stringify(processed));
+              return;
+            }
+
+            // Tier 2: Check YouTube Video Description for lyrics text
+            if (!plainLyricsText && videoId) {
+              try {
+                const details = await getVideoDetails([videoId], "discovery");
+                const d = details.get(videoId);
+                if (d && d.description) {
+                  const descMatch = d.description.match(/(?:lyrics|song lyrics|lyrics\s*:\s*|গান\s*:\s*|কথা\s*:\s*|बोल\s*:\s*)([\s\S]*?)(?=(?:music\s*label|audio\s*label|label\s*:|singer\s*:|composer\s*:|director|producer|stream|listen|available|itunes|spotify|http|#|\n{3,}|$))/i);
+                  if (descMatch && descMatch[1]) {
+                    const candidateLines = descMatch[1]
+                      .split(/\r?\n/)
+                      .map((l: string) => l.trim())
+                      .filter((l: string) => l.length > 0 && !/^(lyrics|written by|singer|composer|music)/i.test(l));
+                    if (candidateLines.length >= 4) {
+                      plainLyricsText = candidateLines.join("\n");
+                    }
+                  }
+                }
+              } catch {
+                // ignore
+              }
+            }
+
+            // Tier 3: Audio-Guided Alignment on Plain Lyrics
+            if (plainLyricsText) {
+              const aligned = alignPlainLyrics(plainLyricsText, duration || 210);
+              if (aligned.length > 0) {
+                const processed = {
+                  source: "aligned",
+                  lines: processLyricsLines(aligned),
+                };
+                cache.set(lyricsCacheKey, processed, 86400);
+                res.setHeader("Content-Type", "application/json");
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.end(JSON.stringify(processed));
+                return;
+              }
+            }
+          } catch (err: any) {
+            console.warn("[Vite Dev YouTube] Lyrics handler error:", err.message);
+          }
+
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.end(JSON.stringify({ source: "none", lines: [] }));
+          return;
+        }
+
+        // 8. /health and /api/health (Reports dual-pool health & quota status)
+        if (pathname === "/health" || pathname === "/api/health") {
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.end(JSON.stringify({ status: "online", ...poolManager.getStatus() }));
           return;
         }
 

@@ -37,7 +37,7 @@ def run_tests():
     # Test 2: Multi-Key YouTube API Pool & 403 Rotation
     # ---------------------------------------------------------
     print("\n[TEST 2] Testing Multi-Key YouTube API Pool & 403 Rotation...")
-    test_pool = YouTubeKeyPool()
+    test_pool = YouTubeKeyPool(name="TestPool")
     test_pool._keys = ["KEY_ALPHA_111111111111111111111111", "KEY_BETA_222222222222222222222222", "KEY_GAMMA_33333333333333333333333"]
     test_pool._exhausted_keys = {}
     test_pool._current_idx = 0
@@ -60,6 +60,26 @@ def run_tests():
     assert status["active_keys"] == 0
     assert status["exhausted_keys"] == 3
     print("[OK] YouTubeKeyPool successfully rotated on 403 quota errors and tracked exhausted status.")
+
+    # ---------------------------------------------------------
+    # Test 2.1: Dual-Pool Quota Isolation (Discovery vs Search)
+    # ---------------------------------------------------------
+    print("\n[TEST 2.1] Testing Dual-Pool Quota Isolation (Discovery vs Search)...")
+    pool_disc = YouTubeKeyPool(name="Song Discovery", keys=["DISC_KEY_11111111111111111111", "DISC_KEY_22222222222222222222"])
+    pool_search = YouTubeKeyPool(name="Search", keys=["SEARCH_KEY_33333333333333333333"])
+
+    assert pool_disc.get_active_key() == "DISC_KEY_11111111111111111111"
+    assert pool_search.get_active_key() == "SEARCH_KEY_33333333333333333333"
+
+    # Exhaust Search Pool Key
+    pool_search.mark_key_exhausted("SEARCH_KEY_33333333333333333333", "HTTP 403: quotaExceeded")
+    assert pool_search.get_active_key() is None
+    assert pool_search.get_status()["active_keys"] == 0
+
+    # Verify Discovery Pool is 100% unaffected by Search Pool exhaustion
+    assert pool_disc.get_active_key() == "DISC_KEY_11111111111111111111"
+    assert pool_disc.get_status()["active_keys"] == 2
+    print("[OK] Quota isolation verified: Exhausting Search Pool leaves Discovery Pool 100% active.")
 
     # ---------------------------------------------------------
     # Test 3: In-Memory Search Caching (12-hour TTL)
@@ -119,8 +139,10 @@ def run_tests():
     h_data = health_resp.get_json()
     assert h_data["status"] == "online"
     assert "key_pool" in h_data
+    assert "discovery_pool" in h_data
+    assert "search_pool" in h_data
     assert "cache" in h_data
-    print("[OK] /health endpoint verified.")
+    print("[OK] /health endpoint verified with dual-pool status.")
 
     # 5.2 /api/search with mocked pool (returning uniform items)
     with patch("extractor_api.search_youtube_api_pool") as mock_api:

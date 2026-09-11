@@ -146,7 +146,9 @@ export function mapToPlayerSong(
   category = "Up Next"
 ): Song {
   const cleanId = id.replace(/^yt-/, "").trim();
-  const { title: cleanT, artist: cleanA } = cleanYouTubeTitle(title, artist);
+  const rawTitle = (title || "").trim();
+  const rawArtist = (artist || "").trim();
+  const { title: cleanT, artist: cleanA } = cleanYouTubeTitle(rawTitle, rawArtist);
 
   const sectionId: SectionId =
     category === "Bangla"
@@ -162,8 +164,8 @@ export function mapToPlayerSong(
   return normalizeYouTubeSong(
     {
       id: cleanId,
-      title: cleanT,
-      channelTitle: cleanA,
+      title: cleanT || rawTitle || "YouTube Track",
+      channelTitle: cleanA || rawArtist || "YouTube Artist",
       thumbnail: cover || `https://img.youtube.com/vi/${cleanId}/hqdefault.jpg`,
       duration: durationSec > 0 ? durationSec : 210,
     },
@@ -172,35 +174,50 @@ export function mapToPlayerSong(
   );
 }
 
+export interface PaginatedValidMusicVideos {
+  songs: Song[];
+  nextPageToken: string | null;
+}
+
 /**
- * Searches valid music videos using YouTube Data API v3 with Extractor fallback.
+ * Searches valid music videos using YouTube Data API v3 with real pagination (nextPageToken) support.
  * Strictly applies duration bounds (60s to 480s) and isMusicContent validation.
  */
-export async function searchValidMusicVideos(
+export async function searchValidMusicVideosPaginated(
   query: string,
   maxLimit = 20,
-  preferredCategory = "Up Next"
-): Promise<Song[]> {
+  preferredCategory = "Up Next",
+  pageToken?: string | null
+): Promise<PaginatedValidMusicVideos> {
   const validSongs: Song[] = [];
   const seenIds = new Set<string>();
+  let nextPageToken: string | null = null;
 
   try {
     const extractorUrl = getExtractorBaseUrl();
     const cleanSearchQuery = `${query.trim()} ${NEGATIVE_SEARCH_FILTER}`.replace(/\s+/g, " ");
-    const fallbackRes = await fetch(
-      `${extractorUrl}/api/search?q=${encodeURIComponent(cleanSearchQuery)}&limit=${Math.max(maxLimit, 25)}`
-    );
+    const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+    const endpoint = `${extractorUrl}/api/search?q=${encodeURIComponent(cleanSearchQuery)}&limit=${Math.max(maxLimit, 25)}&type=discovery&pool=discovery${pageParam}`;
+    const fallbackRes = await fetch(endpoint);
 
     if (fallbackRes.ok) {
       const data = await fallbackRes.json();
+      nextPageToken = data.nextPageToken || null;
       const items = data.items || data || [];
       if (Array.isArray(items)) {
         for (const item of items) {
-          const vid = (item.id || "").replace(/^yt-/, "").trim();
+          const vid = (item.id || item.videoId || "").replace(/^yt-/, "").trim();
           if (!vid || seenIds.has(vid)) continue;
 
-          const rawTitle = item.title || "";
-          const rawChannel = item.channelTitle || item.channel || item.artist || item.uploader || "";
+          const rawTitle = item.title || item.name || "";
+          const rawChannel =
+            item.artist ||
+            item.channelTitle ||
+            item.channel ||
+            item.uploader ||
+            item.videoOwnerChannelTitle ||
+            item.author ||
+            "";
           const desc = item.description || "";
           const dur = typeof item.duration === "number" ? item.duration : 0;
 
@@ -214,7 +231,7 @@ export async function searchValidMusicVideos(
               vid,
               rawTitle,
               rawChannel,
-              item.thumbnail || `https://img.youtube.com/vi/${vid}/hqdefault.jpg`,
+              item.thumbnail || item.cover || `https://img.youtube.com/vi/${vid}/hqdefault.jpg`,
               dur || 210,
               preferredCategory
             )
@@ -228,7 +245,23 @@ export async function searchValidMusicVideos(
     console.warn("Backend search notice in Radio engine:", err);
   }
 
-  return deduplicateYouTubeTracks(validSongs);
+  return {
+    songs: deduplicateYouTubeTracks(validSongs),
+    nextPageToken,
+  };
+}
+
+/**
+ * Searches valid music videos using YouTube Data API v3 with Extractor fallback.
+ * Strictly applies duration bounds (60s to 480s) and isMusicContent validation.
+ */
+export async function searchValidMusicVideos(
+  query: string,
+  maxLimit = 20,
+  preferredCategory = "Up Next"
+): Promise<Song[]> {
+  const res = await searchValidMusicVideosPaginated(query, maxLimit, preferredCategory);
+  return res.songs;
 }
 
 /**
@@ -397,7 +430,7 @@ export async function generateRadioQueue(
             mapToPlayerSong(
               vid,
               it.title || "",
-              it.artist || it.channelTitle || "YouTube Artist",
+              it.artist || it.channelTitle || it.channel || it.uploader || it.videoOwnerChannelTitle || it.author || "YouTube Artist",
               it.thumbnail || `https://img.youtube.com/vi/${vid}/hqdefault.jpg`,
               it.duration || 210,
               "Up Next"

@@ -72,7 +72,7 @@ export const BeatChickCard = memo(function BeatChickCard({
               </span>
               <span className="inline-flex items-center gap-0.5 rounded-full bg-teal-400/15 px-1.5 py-0.2 text-[8px] font-bold text-teal-300 border border-teal-400/20">
                 {hasLyrics ? (
-                  <span>{lyrics?.source === "youtube_captions" ? "CC" : "SYNCED"}</span>
+                  <span>{lyrics?.source === "aligned" ? "ALIGNED" : lyrics?.source === "youtube_captions" ? "CC" : "SYNCED"}</span>
                 ) : (
                   <>
                     <Sparkles className="size-2 text-teal-300" />
@@ -82,7 +82,7 @@ export const BeatChickCard = memo(function BeatChickCard({
               </span>
             </div>
             <p className="truncate text-[9px] font-medium text-teal-400/80">
-              {hasLyrics ? "Real-time synced lyrics" : "Feel the beat, feel the vibe!"}
+              {hasLyrics ? (lyrics?.source === "aligned" ? "Audio-aligned lyrics" : "Real-time synced lyrics") : "Feel the beat, feel the vibe!"}
             </p>
           </div>
         </div>
@@ -97,7 +97,7 @@ export const BeatChickCard = memo(function BeatChickCard({
       </div>
 
       {/* ── CARD MAIN VISUAL BODY (Multi-Band Visualizer + Center [Lyrics vs. Chick]) ─ */}
-      <div className="relative mt-2 flex h-28 items-center justify-between px-2 overflow-hidden">
+      <div className="relative mt-2 flex h-32 sm:h-36 items-center justify-between px-2 overflow-hidden transition-all duration-300">
         {/* Left Multi-Band Visualizer (Bass / Vocal / Treble) */}
         <MultiBandVisualizer isPlaying={isPlaying} side="left" className="w-16 sm:w-20 shrink-0" />
 

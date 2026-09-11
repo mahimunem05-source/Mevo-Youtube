@@ -235,7 +235,7 @@ export async function searchExtractor(
     return { items: [], count: 0, source: "none", query: "" };
   }
 
-  const endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(trimmed)}&limit=${limit}`;
+  const endpoint = `${baseUrl}/api/search?q=${encodeURIComponent(trimmed)}&limit=${limit}&type=search&pool=search`;
   const res = await fetch(endpoint);
   if (!res.ok) {
     throw new Error(`Search request failed with status HTTP ${res.status}`);

@@ -83,7 +83,7 @@ export async function getRelatedTracks(
       .trim();
     const query = `${artist} ${cleanTitle} official audio -shorts -tiktok -billboard -top10 -top20 -top50 -top100 -recap -countdown`;
 
-    const fallbackRes = await fetch(`${extractorUrl}/api/search?q=${encodeURIComponent(query)}&limit=12`);
+    const fallbackRes = await fetch(`${extractorUrl}/api/search?q=${encodeURIComponent(query)}&limit=12&type=discovery&pool=discovery`);
     if (fallbackRes.ok) {
       const results = await fallbackRes.json();
       const items = results.items || results || [];
