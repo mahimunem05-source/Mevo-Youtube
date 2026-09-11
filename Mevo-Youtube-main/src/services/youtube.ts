@@ -5,6 +5,12 @@
 
 import type { SectionId, Song } from "@/data/songs";
 import { getYouTubeStreamUrl, getExtractorBaseUrl } from "@/lib/extractor";
+import {
+  filterAndRankSectionTracks,
+  isShortsVideo,
+  validateSectionEligibility,
+  isPlayableTrack,
+} from "@/lib/youtube-discovery";
 
 export interface YouTubeSearchResult {
   id: string;
@@ -492,11 +498,15 @@ export function isMusicContent(
   const text = `${titleLower} ${channelLower} ${description.toLowerCase()}`;
 
   // 1. Strict Duration Filter: Minimum 60 seconds (1 min) and Maximum 480 seconds (8 min)
-  if (durationSeconds > 0 && (durationSeconds < 60 || durationSeconds > 480)) {
+  if (durationSeconds > 0 && (durationSeconds < 55 || durationSeconds > 480)) {
     return false;
   }
 
-  // 2. Shorts patterns
+  // 2. Shorts patterns & short-form video filter
+  if (isShortsVideo(title, description, durationSeconds)) {
+    return false;
+  }
+
   for (const pattern of SHORTS_PATTERNS) {
     if (pattern.test(title) || pattern.test(description)) {
       return false;
@@ -1246,114 +1256,363 @@ export async function fetchYouTubeVideoDetails(videoIds: string[]): Promise<Map<
   });
 }
 
+export const SECTION_QUERY_EXPANSIONS: Record<string, string[]> = {
+  bangla: [
+    "new bangla songs official audio | bangla band official audio -hindi -english -punjabi -natok -reaction -status",
+    "top bangla new hits official audio track -hindi -english -punjabi -natok",
+    "popular bangla romantic acoustic official audio songs -hindi -english -natok",
+    "bangla rock folk fusion official music audio -hindi -english -natok",
+    "best bangla studio songs official audio release -hindi -english",
+  ],
+  "bengal-echo": [
+    "new bangla songs official audio | bangla band official audio -hindi -english -punjabi -natok -reaction -status",
+    "top bangla new hits official audio track -hindi -english -punjabi -natok",
+    "popular bangla romantic acoustic official audio songs -hindi -english -natok",
+    "bangla rock folk fusion official music audio -hindi -english -natok",
+    "best bangla studio songs official audio release -hindi -english",
+  ],
+  "bangla-beats": [
+    "new bangla songs official audio | bangla band official audio -hindi -english -punjabi -natok -reaction -status",
+    "top bangla new hits official audio track -hindi -english -punjabi -natok",
+    "popular bangla romantic acoustic official audio songs -hindi -english -natok",
+    "bangla rock folk fusion official music audio -hindi -english -natok",
+    "best bangla studio songs official audio release -hindi -english",
+  ],
+  hindi: [
+    "latest hindi official audio songs | bollywood official audio -bangla -english -reaction -status",
+    "trending romantic hindi songs official audio -bangla -english",
+    "soulful bollywood melodies official audio songs -bangla -english",
+    "hindi unplugged acoustic official audio songs -bangla -english",
+    "top hindi pop tracks official audio -bangla -english",
+  ],
+  "hindi-reverie": [
+    "latest hindi official audio songs | bollywood official audio -bangla -english -reaction -status",
+    "trending romantic hindi songs official audio -bangla -english",
+    "soulful bollywood melodies official audio songs -bangla -english",
+    "hindi unplugged acoustic official audio songs -bangla -english",
+    "top hindi pop tracks official audio -bangla -english",
+  ],
+  "soft-hindi-vibes": [
+    "latest hindi official audio songs | bollywood official audio -bangla -english -reaction -status",
+    "trending romantic hindi songs official audio -bangla -english",
+    "soulful bollywood melodies official audio songs -bangla -english",
+    "hindi unplugged acoustic official audio songs -bangla -english",
+    "top hindi pop tracks official audio -bangla -english",
+  ],
+  english: [
+    "new english pop official audio songs | viral english songs -hindi -bangla -bollywood",
+    "top billboard english pop hits official audio -hindi -bangla",
+    "global acoustic chill english songs official audio -hindi -bangla",
+    "trending international pop hits official audio -hindi -bangla",
+    "new english radio songs official audio -hindi -bangla",
+  ],
+  "english-essence": [
+    "new english pop official audio songs | viral english songs -hindi -bangla -bollywood",
+    "top billboard english pop hits official audio -hindi -bangla",
+    "global acoustic chill english songs official audio -hindi -bangla",
+    "trending international pop hits official audio -hindi -bangla",
+    "new english radio songs official audio -hindi -bangla",
+  ],
+  "boost-aura": [
+    "drift phonk official audio | phonk music official audio -top10 -top20 -top50 -recap",
+    "brazilian phonk viral official audio tracks -top10 -top20 -top50",
+    "aggressive drift phonk bass boosted audio -top10 -top20 -top50",
+    "gym workout phonk montage official audio -top10 -top20 -top50",
+    "phonk dark ambient speed up official audio -top10 -top20 -top50",
+  ],
+  global: [
+    "kpop official music video | latin hits reggaeton official audio -hindi -bangla -bollywood -natok",
+    "afrobeats viral hits official audio | amapiano -hindi -bangla -bollywood",
+    "jpop trending official audio tracks -hindi -bangla -bollywood",
+    "latin reggaeton hits official music video -hindi -bangla -bollywood",
+  ],
+  "sonic-world": [
+    "kpop official music video | latin hits reggaeton official audio -hindi -bangla -bollywood -natok",
+    "afrobeats viral hits official audio | amapiano -hindi -bangla -bollywood",
+    "jpop trending official audio tracks -hindi -bangla -bollywood",
+    "latin reggaeton hits official music video -hindi -bangla -bollywood",
+  ],
+  "global-tracks": [
+    "kpop official music video | latin hits reggaeton official audio -hindi -bangla -bollywood -natok",
+    "afrobeats viral hits official audio | amapiano -hindi -bangla -bollywood",
+    "jpop trending official audio tracks -hindi -bangla -bollywood",
+    "latin reggaeton hits official music video -hindi -bangla -bollywood",
+  ],
+  trending: [
+    "top trending hindi bollywood english pop phonk viral official audio",
+    "global viral chart top tracks official audio",
+    "trending popular world hits official music audio",
+  ],
+  "mevo-pulse": [
+    "top trending hindi bollywood english pop phonk viral official audio",
+    "global viral chart top tracks official audio",
+    "trending popular world hits official music audio",
+  ],
+};
+
 /**
- * Fetches MEVO Pulse Custom Blended Trending Feed via Backend Trending endpoint
- * Dominated by Hindi Hits, Global English Hits, Phonk, and Sonic World (K-Pop/Latin) with Top Bangla Hits.
+ * Fetches MEVO Pulse Custom Blended Trending Feed with Upstream Pagination:
+ * fetch → validate → deduplicate → collect → paginate if necessary → return targetCount (15) songs.
  */
 export async function fetchYouTubeTrending(
   regionCode = "BD",
-  maxResults = 50,
+  targetCount = 15,
   sectionId: SectionId = "bangla",
   categoryTitle = "MEVO Pulse"
 ): Promise<Song[]> {
-  const cacheKey = `trending:${regionCode}:${maxResults}:${sectionId}`;
+  const cacheKey = `trending:${regionCode}:${targetCount}:${sectionId}`;
   return fetchWithSingleFlight<Song[]>(cacheKey, async (): Promise<Song[]> => {
     const baseUrl = getExtractorBaseUrl();
-    try {
-      const res = await fetch(
-        `${baseUrl}/api/youtube/trending?region=${encodeURIComponent(regionCode)}&limit=${maxResults}&sectionId=${encodeURIComponent(sectionId)}`
-      );
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data.items) && data.items.length > 0) {
-          const songs: Song[] = data.items.map((it: any) =>
-            youTubeVideoToPlayerSong(
-              {
-                id: it.id,
-                title: it.title,
-                channelTitle: it.artist || it.channelTitle || it.uploader,
-                thumbnail: it.thumbnail,
-                duration: it.duration,
-                viewCount: it.viewCount || it.view_count || 0,
-                publishedAt: it.publishedAt,
-              },
-              (it.section as SectionId) || sectionId,
-              categoryTitle,
-              { trending: true }
-            )
-          );
-          return deduplicateYouTubeTracks(songs).slice(0, maxResults);
-        }
-      }
-    } catch (err) {
-      console.warn("[fetchYouTubeTrending] Backend trending error, attempting search fallback:", err);
+    const collectedSongs: Song[] = [];
+    const seenIds = new Set<string>();
+    const seenSignatures = new Set<string>();
+
+    function addCandidate(song: Song): boolean {
+      const rawId = (song.id || "").replace(/^yt-/, "").trim().toLowerCase();
+      if (!rawId || seenIds.has(rawId)) return false;
+
+      const normTitle = (song.title || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24);
+      const normArtist = (song.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16);
+      const sig = `${normTitle}___${normArtist}`;
+      if (normTitle && normArtist && seenSignatures.has(sig)) return false;
+
+      if (!isPlayableTrack({ id: rawId, duration: song.duration })) return false;
+      if (isShortsVideo(song.title, (song as any).description || "", song.duration || 0)) return false;
+
+      seenIds.add(rawId);
+      if (normTitle && normArtist) seenSignatures.add(sig);
+      collectedSongs.push(song);
+      return true;
     }
 
-    // Fallback if /api/youtube/trending is temporarily unreachable
-    const fallbackSongs = await fetchFromExtractor(
-      "latest hindi bollywood english pop phonk official audio -billboard -top10 -top20 -top50 -top100 -recap -countdown",
-      maxResults,
-      sectionId,
-      categoryTitle,
-      { trending: true }
-    );
-    return deduplicateYouTubeTracks(fallbackSongs).slice(0, maxResults);
+    let pageToken: string | null = null;
+    let pageCount = 0;
+    const maxPages = 4;
+    const trendingExpansions = SECTION_QUERY_EXPANSIONS["trending"] || [
+      "top trending hindi bollywood english pop phonk viral official audio",
+      "global viral chart top tracks official audio",
+      "trending popular world hits official music audio",
+    ];
+    let expansionIndex = 0;
+
+    while (collectedSongs.length < targetCount && pageCount < maxPages) {
+      pageCount++;
+      const pageParam: string = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+      let nextPageToken: string | null = null;
+      let gotNewCandidatesOnPage = false;
+
+      try {
+        const endpoint: string = `${baseUrl}/api/youtube/trending?region=${encodeURIComponent(regionCode)}&limit=50&sectionId=${encodeURIComponent(sectionId)}${pageParam}`;
+        const res: Response = await fetch(endpoint);
+        if (res.ok) {
+          const data: any = await res.json();
+          nextPageToken = data.nextPageToken || null;
+          if (data && Array.isArray(data.items) && data.items.length > 0) {
+            for (const it of data.items) {
+              const song = youTubeVideoToPlayerSong(
+                {
+                  id: it.id,
+                  title: it.title,
+                  channelTitle: it.artist || it.channelTitle || it.uploader,
+                  thumbnail: it.thumbnail,
+                  duration: it.duration,
+                  viewCount: it.viewCount || it.view_count || 0,
+                  publishedAt: it.publishedAt,
+                },
+                (it.section as SectionId) || sectionId,
+                categoryTitle,
+                { trending: true }
+              );
+              if (addCandidate(song)) {
+                gotNewCandidatesOnPage = true;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[fetchYouTubeTrending] Page ${pageCount} error:`, err);
+      }
+
+      if (collectedSongs.length >= targetCount) break;
+
+      if (gotNewCandidatesOnPage && nextPageToken && nextPageToken !== pageToken) {
+        pageToken = nextPageToken;
+      } else if (expansionIndex < trendingExpansions.length) {
+        try {
+          const expQuery = trendingExpansions[expansionIndex++];
+          const fallbackSongs = await fetchFromExtractor(
+            expQuery,
+            50,
+            sectionId,
+            categoryTitle,
+            { trending: true }
+          );
+          for (const s of fallbackSongs) addCandidate(s);
+        } catch (expErr) {
+          console.warn("[fetchYouTubeTrending] Expansion error:", expErr);
+        }
+        pageToken = null;
+      } else if (nextPageToken && nextPageToken !== pageToken) {
+        pageToken = nextPageToken;
+      } else {
+        break;
+      }
+    }
+
+    const rankedSongs = filterAndRankSectionTracks(collectedSongs, "mevo-pulse");
+    const deduped = deduplicateYouTubeTracks(rankedSongs);
+    return deduped.slice(0, targetCount);
   });
 }
 
 /**
- * Fetches YouTube Category Music Tracks via Backend Category endpoint with single-flight deduplication.
+ * Fetches YouTube Category Music Tracks with Upstream Pagination:
+ * fetch → validate → deduplicate → collect → paginate if necessary → return targetCount (15) songs.
  */
 export async function fetchYouTubeCategoryTracks(
   query: string,
-  order: "viewCount" | "relevance" = "viewCount",
-  maxResults = 50,
+  order: "viewCount" | "relevance" = "relevance",
+  targetCount = 15,
   sectionId: SectionId = "bangla",
   categoryTitle = "Category",
   options: { trending?: boolean } = {}
 ): Promise<Song[]> {
-  const cacheKey = `category:${query.trim().toLowerCase()}:${order}:${maxResults}:${sectionId}`;
+  const cacheKey = `category:${query.trim().toLowerCase()}:${order}:${targetCount}:${sectionId}`;
   return fetchWithSingleFlight<Song[]>(cacheKey, async (): Promise<Song[]> => {
     const baseUrl = getExtractorBaseUrl();
-    try {
-      const endpoint = `${baseUrl}/api/youtube/category?q=${encodeURIComponent(query.trim())}&order=${order}&limit=${maxResults}&sectionId=${encodeURIComponent(sectionId)}&categoryTitle=${encodeURIComponent(categoryTitle)}`;
-      const res = await fetch(endpoint);
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data.songs) && data.songs.length > 0) {
-          const songs: Song[] = data.songs.map((it: any) =>
-            youTubeVideoToPlayerSong(
-              {
-                id: it.id,
-                title: it.title,
-                channelTitle: it.artist || it.channelTitle || it.uploader,
-                thumbnail: it.thumbnail,
-                duration: it.duration,
-                viewCount: it.viewCount || it.view_count || 0,
-                publishedAt: it.publishedAt,
-              },
-              sectionId,
-              categoryTitle,
-              { trending: options.trending ?? false }
-            )
-          );
-          return deduplicateYouTubeTracks(songs).slice(0, maxResults);
-        }
-      }
-    } catch (err) {
-      console.warn(`[fetchYouTubeCategoryTracks] Backend category error for "${query}":`, err);
+    const collectedSongs: Song[] = [];
+    const seenIds = new Set<string>();
+    const seenSignatures = new Set<string>();
+
+    function addCandidate(song: Song): boolean {
+      const rawId = (song.id || "").replace(/^yt-/, "").trim().toLowerCase();
+      if (!rawId || seenIds.has(rawId)) return false;
+
+      const normTitle = (song.title || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24);
+      const normArtist = (song.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16);
+      const sig = `${normTitle}___${normArtist}`;
+      if (normTitle && normArtist && seenSignatures.has(sig)) return false;
+
+      // Validate playable & duration bounds
+      if (!isPlayableTrack({ id: rawId, duration: song.duration })) return false;
+
+      // Validate not shorts
+      if (isShortsVideo(song.title, (song as any).description || "", song.duration || 0)) return false;
+
+      // Validate section eligibility
+      const eligibility = validateSectionEligibility({ title: song.title, artist: song.artist }, sectionId);
+      if (!eligibility.isValid) return false;
+
+      seenIds.add(rawId);
+      if (normTitle && normArtist) seenSignatures.add(sig);
+      collectedSongs.push(song);
+      return true;
     }
 
-    // Fallback to /api/search via fetchFromExtractor
-    const cleanSearchQuery = query.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
-    const fallbackSongs = await fetchFromExtractor(
-      cleanSearchQuery,
-      maxResults,
-      sectionId,
-      categoryTitle,
-      { trending: options.trending ?? false }
-    );
-    return deduplicateYouTubeTracks(fallbackSongs).slice(0, maxResults);
+    let pageToken: string | null = null;
+    let pageCount = 0;
+    const maxPages = 6; // safety threshold to prevent uncontrolled request loop
+    const expansions = SECTION_QUERY_EXPANSIONS[sectionId] || SECTION_QUERY_EXPANSIONS[categoryTitle.toLowerCase()] || [];
+    let expansionIndex = 0;
+
+    while (collectedSongs.length < targetCount && pageCount < maxPages) {
+      pageCount++;
+      const currentQuery = expansionIndex === 0 ? query : (expansions[expansionIndex] || query);
+      const pageParam: string = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+      let gotNewCandidatesOnPage = false;
+      let nextPageTokenFromResponse: string | null = null;
+
+      try {
+        const endpoint: string = `${baseUrl}/api/youtube/category?q=${encodeURIComponent(currentQuery.trim())}&order=${order}&limit=50&sectionId=${encodeURIComponent(sectionId)}&categoryTitle=${encodeURIComponent(categoryTitle)}${pageParam}`;
+        const res: Response = await fetch(endpoint);
+        if (res.ok) {
+          const data: any = await res.json();
+          nextPageTokenFromResponse = data.nextPageToken || null;
+          if (data && Array.isArray(data.songs) && data.songs.length > 0) {
+            for (const it of data.songs) {
+              const song = youTubeVideoToPlayerSong(
+                {
+                  id: it.id,
+                  title: it.title,
+                  channelTitle: it.artist || it.channelTitle || it.uploader,
+                  thumbnail: it.thumbnail,
+                  duration: it.duration,
+                  viewCount: it.viewCount || it.view_count || 0,
+                  publishedAt: it.publishedAt,
+                },
+                sectionId,
+                categoryTitle,
+                { trending: options.trending ?? false }
+              );
+              if (addCandidate(song)) {
+                gotNewCandidatesOnPage = true;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[fetchYouTubeCategoryTracks] Page ${pageCount} error for "${currentQuery}":`, err);
+      }
+
+      // If category endpoint didn't supply enough, try fallback search endpoint
+      if (collectedSongs.length < targetCount && !gotNewCandidatesOnPage && !nextPageTokenFromResponse) {
+        try {
+          const cleanQuery = currentQuery.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+          const fallbackEndpoint: string = `${baseUrl}/api/search?q=${encodeURIComponent(cleanQuery)}&limit=50${pageParam}`;
+          const sRes: Response = await fetch(fallbackEndpoint);
+          if (sRes.ok) {
+            const sData: any = await sRes.json();
+            nextPageTokenFromResponse = sData.nextPageToken || null;
+            if (sData && Array.isArray(sData.items)) {
+              for (const it of sData.items) {
+                const song = youTubeVideoToPlayerSong(
+                  {
+                    id: it.id,
+                    title: it.title,
+                    channelTitle: it.artist || it.channelTitle || it.uploader,
+                    thumbnail: it.thumbnail,
+                    duration: it.duration,
+                    viewCount: it.viewCount || it.view_count || 0,
+                    publishedAt: it.publishedAt,
+                  },
+                  sectionId,
+                  categoryTitle,
+                  { trending: options.trending ?? false }
+                );
+                if (addCandidate(song)) {
+                  gotNewCandidatesOnPage = true;
+                }
+              }
+            }
+          }
+        } catch (fErr) {
+          console.warn("[fetchYouTubeCategoryTracks] Search fallback error:", fErr);
+        }
+      }
+
+      if (collectedSongs.length >= targetCount) {
+        break;
+      }
+
+      // If this page added new candidates and has a next page token, try next page of same query once
+      if (gotNewCandidatesOnPage && nextPageTokenFromResponse && nextPageTokenFromResponse !== pageToken) {
+        pageToken = nextPageTokenFromResponse;
+      } else if (expansionIndex + 1 < expansions.length) {
+        // Query exhausted or produced 0 new candidates: advance to next expansion query
+        expansionIndex++;
+        pageToken = null; // reset pageToken for new expanded query
+      } else if (nextPageTokenFromResponse && nextPageTokenFromResponse !== pageToken) {
+        pageToken = nextPageTokenFromResponse;
+      } else {
+        break;
+      }
+    }
+
+    // Rank candidates using the dynamic scoring system
+    const ranked = filterAndRankSectionTracks(collectedSongs, sectionId);
+    const deduped = deduplicateYouTubeTracks(ranked);
+
+    return deduped.slice(0, targetCount);
   });
 }
 
@@ -1386,7 +1645,8 @@ export async function searchYouTube(query: string, maxResults = 12): Promise<You
             viewCount: item.viewCount || item.view_count || 0,
           }))
           .filter((item: YouTubeSearchResult) =>
-            isMusicContent(item.title, item.channel, item.description, item.duration || 0)
+            isMusicContent(item.title, item.channel, item.description, item.duration || 0) &&
+            !isShortsVideo(item.title, item.description || "", item.duration || 0)
           )
           .sort((a: YouTubeSearchResult, b: YouTubeSearchResult) => getOfficialContentScore(b.channel, b.title) - getOfficialContentScore(a.channel, a.title));
 
@@ -1405,99 +1665,6 @@ export interface PaginatedYouTubeSongs {
   nextPageToken?: string | null;
 }
 
-export const SECTION_QUERY_EXPANSIONS: Record<string, string[]> = {
-  bangla: [
-    "bangla songs official audio | bangla band official audio",
-    "top bangla new hits official audio track",
-    "popular bangla romantic acoustic official audio songs",
-    "bangla rock folk fusion official music audio",
-    "best bangla studio songs official audio release",
-  ],
-  "bengal-echo": [
-    "bangla songs official audio | bangla band official audio",
-    "top bangla new hits official audio track",
-    "popular bangla romantic acoustic official audio songs",
-    "bangla rock folk fusion official music audio",
-    "best bangla studio songs official audio release",
-  ],
-  "bangla-beats": [
-    "bangla songs official audio | bangla band official audio",
-    "top bangla new hits official audio track",
-    "popular bangla romantic acoustic official audio songs",
-    "bangla rock folk fusion official music audio",
-    "best bangla studio songs official audio release",
-  ],
-  hindi: [
-    "latest hindi official audio songs | bollywood official audio",
-    "trending romantic hindi songs official audio",
-    "soulful bollywood melodies official audio songs",
-    "hindi unplugged acoustic official audio songs",
-    "top hindi pop tracks official audio",
-  ],
-  "hindi-reverie": [
-    "latest hindi official audio songs | bollywood official audio",
-    "trending romantic hindi songs official audio",
-    "soulful bollywood melodies official audio songs",
-    "hindi unplugged acoustic official audio songs",
-    "top hindi pop tracks official audio",
-  ],
-  "soft-hindi-vibes": [
-    "latest hindi official audio songs | bollywood official audio",
-    "trending romantic hindi songs official audio",
-    "soulful bollywood melodies official audio songs",
-    "hindi unplugged acoustic official audio songs",
-    "top hindi pop tracks official audio",
-  ],
-  english: [
-    "english pop official audio songs | viral english songs",
-    "top billboard english pop hits official audio",
-    "global acoustic chill english songs official audio",
-    "trending international pop hits official audio",
-    "new english radio songs official audio",
-  ],
-  "english-essence": [
-    "english pop official audio songs | viral english songs",
-    "top billboard english pop hits official audio",
-    "global acoustic chill english songs official audio",
-    "trending international pop hits official audio",
-    "new english radio songs official audio",
-  ],
-  "boost-aura": [
-    "drift phonk official audio | phonk music official audio",
-    "brazilian phonk viral official audio tracks",
-    "aggressive drift phonk bass boosted audio",
-    "gym workout phonk montage official audio",
-    "phonk dark ambient speed up official audio",
-  ],
-  global: [
-    "kpop official audio | latin viral official audio",
-    "afrobeats viral hits official audio",
-    "jpop trending official audio tracks",
-    "global fusion world music official audio",
-  ],
-  "sonic-world": [
-    "kpop official audio | latin viral official audio",
-    "afrobeats viral hits official audio",
-    "jpop trending official audio tracks",
-    "global fusion world music official audio",
-  ],
-  "global-tracks": [
-    "kpop official audio | latin viral official audio",
-    "afrobeats viral hits official audio",
-    "jpop trending official audio tracks",
-    "global fusion world music official audio",
-  ],
-  trending: [
-    "top trending hindi bollywood english pop phonk viral official audio",
-    "global viral chart top tracks official audio",
-    "trending popular world hits official music audio",
-  ],
-  "mevo-pulse": [
-    "top trending hindi bollywood english pop phonk viral official audio",
-    "global viral chart top tracks official audio",
-    "trending popular world hits official music audio",
-  ],
-};
 
 /**
  * Fetches batches of songs (e.g. 16-20 tracks) for dedicated section view with continuous nextPageToken and strict duration bounds.
@@ -1631,8 +1798,9 @@ export async function fetchPaginatedYouTubeCategoryTracks(
       }
     }
 
-    // Deduplicate
-    const deduped = deduplicateYouTubeTracks(accumulated);
+    // Deduplicate and rank accumulated candidate tracks for the section
+    const ranked = filterAndRankSectionTracks(accumulated, sectionId);
+    const deduped = deduplicateYouTubeTracks(ranked);
 
     // If we found songs but token is missing, generate fallback continuous expansion token
     if (!nextToken && deduped.length > 0) {

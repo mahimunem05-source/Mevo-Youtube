@@ -143,8 +143,8 @@ const PHONK_KEYWORDS = [
 ];
 
 export function detectCulturalAffinity(song: Song | Partial<Song> | string): CulturalCategory {
-  const text = typeof song === "string" 
-    ? song.toLowerCase() 
+  const text = typeof song === "string"
+    ? song.toLowerCase()
     : `${song.title || ""} ${song.artist || ""} ${song.genre || ""} ${song.album || ""}`.toLowerCase();
 
   if (PHONK_KEYWORDS.some((kw) => text.includes(kw))) {
@@ -705,8 +705,8 @@ export async function fetchUserQuickPicks(targetCount = 16): Promise<Song[]> {
 
       // Parallel Candidate Retrieval (capped at 3 queries max)
       const fetchPromises = [
-        ...uniqueRelated.slice(0, 2).map((q) => fetchYouTubeCategoryTracks(q, "relevance", 8, dominantCulture as SectionId, "Quick Picks")),
-        ...uniqueSearch.slice(0, 1).map((q) => fetchYouTubeCategoryTracks(q, "viewCount", 8, dominantCulture as SectionId, "Quick Picks")),
+        ...uniqueRelated.slice(0, 2).map((q) => fetchYouTubeCategoryTracks(q, "relevance", 15, dominantCulture as SectionId, "Quick Picks")),
+        ...uniqueSearch.slice(0, 1).map((q) => fetchYouTubeCategoryTracks(q, "viewCount", 15, dominantCulture as SectionId, "Quick Picks")),
       ];
 
       const results = await Promise.allSettled(fetchPromises);
@@ -724,156 +724,156 @@ export async function fetchUserQuickPicks(targetCount = 16): Promise<Song[]> {
         }
       });
 
-    // 2. Stage 2 Candidate Merging & Strict Vibe / Genre / Entity Consistency Control
-    const finalSelection: Song[] = [];
-    const seenIds = new Set<string>();
-    const seenCoreTitles: string[] = [];
-    const artistDistribution: Record<string, number> = {};
+      // 2. Stage 2 Candidate Merging & Strict Vibe / Genre / Entity Consistency Control
+      const finalSelection: Song[] = [];
+      const seenIds = new Set<string>();
+      const seenCoreTitles: string[] = [];
+      const artistDistribution: Record<string, number> = {};
 
-    function isTrackCompatibleWithTaste(song: Song): boolean {
-      if (isGuest) return true;
-      const songCulture = detectCulturalAffinity(song);
+      function isTrackCompatibleWithTaste(song: Song): boolean {
+        if (isGuest) return true;
+        const songCulture = detectCulturalAffinity(song);
 
-      // Strict Vibe Isolation
-      if (dominantCulture === "boost-aura") {
-        return songCulture === "boost-aura" || (song.genre || "").toLowerCase().includes("phonk") || (song.genre || "").toLowerCase().includes("electronic");
+        // Strict Vibe Isolation
+        if (dominantCulture === "boost-aura") {
+          return songCulture === "boost-aura" || (song.genre || "").toLowerCase().includes("phonk") || (song.genre || "").toLowerCase().includes("electronic");
+        }
+
+        if (dominantCulture === "hindi") {
+          if (songCulture === "boost-aura") return false;
+          return songCulture === "hindi" || songCulture === "global";
+        }
+
+        if (dominantCulture === "bangla") {
+          if (songCulture === "boost-aura") return false;
+          return songCulture === "bangla" || songCulture === "global";
+        }
+
+        if (dominantCulture === "english") {
+          if (songCulture === "boost-aura") return false;
+          return songCulture === "english" || songCulture === "global";
+        }
+
+        return true;
       }
 
-      if (dominantCulture === "hindi") {
-        if (songCulture === "boost-aura") return false;
-        return songCulture === "hindi" || songCulture === "global";
+      function addCandidate(song: Song): boolean {
+        if (!song || !song.id) return false;
+        // Do NOT recommend the song the user is currently playing
+        if (currentTrackId && song.id === currentTrackId) return false;
+        if (seenIds.has(song.id)) return false;
+
+        // Duration limits (60s to 480s)
+        if (typeof song.duration === "number" && song.duration > 0) {
+          if (song.duration < 60 || song.duration > 480) return false;
+        }
+
+        // Strict Vibe Consistency Check
+        if (!isTrackCompatibleWithTaste(song)) return false;
+
+        // Fuzzy Core Song Title Deduplication: Max 1 variation per core song in recommendations
+        const songCore = extractCoreSongRoot(song.title);
+        if (songCore) {
+          const isDuplicateVariation = seenCoreTitles.some((existingCore) =>
+            isSameCoreSong(existingCore, songCore, 0.70)
+          );
+          if (isDuplicateVariation) {
+            return false;
+          }
+        }
+
+        // Max 2 tracks per artist for high discovery diversity
+        const artist = cleanArtistName(song.artist);
+        if ((artistDistribution[artist] || 0) >= 2) return false;
+
+        if (songCore) {
+          seenCoreTitles.push(songCore);
+        }
+        seenIds.add(song.id);
+        artistDistribution[artist] = (artistDistribution[artist] || 0) + 1;
+        finalSelection.push(song);
+        return true;
       }
 
-      if (dominantCulture === "bangla") {
-        if (songCulture === "boost-aura") return false;
-        return songCulture === "bangla" || songCulture === "global";
+      // 1. Primary Allocation: Related & Similar Discovery (70% target, ~11 tracks)
+      const targetRelated = Math.round(targetCount * 0.7);
+      for (const track of poolRelated) {
+        if (finalSelection.length >= targetRelated) break;
+        addCandidate(track);
       }
 
-      if (dominantCulture === "english") {
-        if (songCulture === "boost-aura") return false;
-        return songCulture === "english" || songCulture === "global";
+      // 2. Secondary Allocation: Search Context & Adjacent Tracks (20% target, ~3 tracks)
+      const searchTargetCount = finalSelection.length + Math.round(targetCount * 0.2);
+      for (const track of poolSearch) {
+        if (finalSelection.length >= searchTargetCount) break;
+        addCandidate(track);
       }
 
-      return true;
-    }
-
-    function addCandidate(song: Song): boolean {
-      if (!song || !song.id) return false;
-      // Do NOT recommend the song the user is currently playing
-      if (currentTrackId && song.id === currentTrackId) return false;
-      if (seenIds.has(song.id)) return false;
-
-      // Duration limits (60s to 480s)
-      if (typeof song.duration === "number" && song.duration > 0) {
-        if (song.duration < 60 || song.duration > 480) return false;
-      }
-
-      // Strict Vibe Consistency Check
-      if (!isTrackCompatibleWithTaste(song)) return false;
-
-      // Fuzzy Core Song Title Deduplication: Max 1 variation per core song in recommendations
-      const songCore = extractCoreSongRoot(song.title);
-      if (songCore) {
-        const isDuplicateVariation = seenCoreTitles.some((existingCore) =>
-          isSameCoreSong(existingCore, songCore, 0.70)
-        );
-        if (isDuplicateVariation) {
-          return false;
+      // 3. Tertiary Allocation: Up to 1-2 completed tracks from history (excluding current)
+      const completedHistory = graph.recentHistory
+        .filter((h) => h.completed && h.song.id !== currentTrackId)
+        .map((h) => h.song);
+      const historyCap = Math.min(2, Math.max(0, targetCount - finalSelection.length));
+      let addedFromHistory = 0;
+      for (const track of completedHistory) {
+        if (addedFromHistory >= historyCap) break;
+        if (addCandidate(track)) {
+          addedFromHistory++;
         }
       }
 
-      // Max 2 tracks per artist for high discovery diversity
-      const artist = cleanArtistName(song.artist);
-      if ((artistDistribution[artist] || 0) >= 2) return false;
-
-      if (songCore) {
-        seenCoreTitles.push(songCore);
-      }
-      seenIds.add(song.id);
-      artistDistribution[artist] = (artistDistribution[artist] || 0) + 1;
-      finalSelection.push(song);
-      return true;
-    }
-
-    // 1. Primary Allocation: Related & Similar Discovery (70% target, ~11 tracks)
-    const targetRelated = Math.round(targetCount * 0.7);
-    for (const track of poolRelated) {
-      if (finalSelection.length >= targetRelated) break;
-      addCandidate(track);
-    }
-
-    // 2. Secondary Allocation: Search Context & Adjacent Tracks (20% target, ~3 tracks)
-    const searchTargetCount = finalSelection.length + Math.round(targetCount * 0.2);
-    for (const track of poolSearch) {
-      if (finalSelection.length >= searchTargetCount) break;
-      addCandidate(track);
-    }
-
-    // 3. Tertiary Allocation: Up to 1-2 completed tracks from history (excluding current)
-    const completedHistory = graph.recentHistory
-      .filter((h) => h.completed && h.song.id !== currentTrackId)
-      .map((h) => h.song);
-    const historyCap = Math.min(2, Math.max(0, targetCount - finalSelection.length));
-    let addedFromHistory = 0;
-    for (const track of completedHistory) {
-      if (addedFromHistory >= historyCap) break;
-      if (addCandidate(track)) {
-        addedFromHistory++;
-      }
-    }
-
-    // 4. Fill remaining slots from discovery pools
-    for (const track of [...poolRelated, ...poolSearch]) {
-      if (finalSelection.length >= targetCount) break;
-      addCandidate(track);
-    }
-
-    // 5. Fallback Diverse Filling: If slots remain after variation filtering, fetch diverse regional/cultural tracks
-    if (finalSelection.length < targetCount) {
-      const fallbackQueries: string[] = [];
-      if (dominantCulture === "hindi") {
-        fallbackQueries.push(`superhit hindi acoustic melodic songs official audio ${NEGATIVE_SEARCH_FILTER}`);
-        fallbackQueries.push(`best hindi unplugged romantic hits official audio ${NEGATIVE_SEARCH_FILTER}`);
-      } else if (dominantCulture === "bangla") {
-        fallbackQueries.push(`top bangla band acoustic songs official audio ${NEGATIVE_SEARCH_FILTER}`);
-        fallbackQueries.push(`latest bangla modern indie melodies official audio ${NEGATIVE_SEARCH_FILTER}`);
-      } else if (dominantCulture === "boost-aura") {
-        fallbackQueries.push(`aggressive phonk drift workout music ${NEGATIVE_SEARCH_FILTER}`);
-        fallbackQueries.push(`brazilian phonk montage bass boosted ${NEGATIVE_SEARCH_FILTER}`);
-      } else if (dominantCulture === "english") {
-        fallbackQueries.push(`top acoustic indie pop songs official audio ${NEGATIVE_SEARCH_FILTER}`);
-        fallbackQueries.push(`viral english acoustic hits official audio ${NEGATIVE_SEARCH_FILTER}`);
-      } else {
-        fallbackQueries.push(`top viral acoustic melodic hits official audio ${NEGATIVE_SEARCH_FILTER}`);
-        fallbackQueries.push(`latest global indie pop songs official audio ${NEGATIVE_SEARCH_FILTER}`);
+      // 4. Fill remaining slots from discovery pools
+      for (const track of [...poolRelated, ...poolSearch]) {
+        if (finalSelection.length >= targetCount) break;
+        addCandidate(track);
       }
 
-      const fallbackResults = await Promise.allSettled(
-        fallbackQueries.map((q) =>
-          fetchYouTubeCategoryTracks(q, "relevance", 8, dominantCulture as SectionId, "Quick Picks")
-        )
-      );
-      for (const res of fallbackResults) {
-        if (res.status === "fulfilled" && Array.isArray(res.value)) {
-          for (const track of res.value) {
-            if (finalSelection.length >= targetCount) break;
-            addCandidate(track);
+      // 5. Fallback Diverse Filling: If slots remain after variation filtering, fetch diverse regional/cultural tracks
+      if (finalSelection.length < targetCount) {
+        const fallbackQueries: string[] = [];
+        if (dominantCulture === "hindi") {
+          fallbackQueries.push(`superhit hindi acoustic melodic songs official audio ${NEGATIVE_SEARCH_FILTER}`);
+          fallbackQueries.push(`best hindi unplugged romantic hits official audio ${NEGATIVE_SEARCH_FILTER}`);
+        } else if (dominantCulture === "bangla") {
+          fallbackQueries.push(`top bangla band acoustic songs official audio ${NEGATIVE_SEARCH_FILTER}`);
+          fallbackQueries.push(`latest bangla modern indie melodies official audio ${NEGATIVE_SEARCH_FILTER}`);
+        } else if (dominantCulture === "boost-aura") {
+          fallbackQueries.push(`aggressive phonk drift workout music ${NEGATIVE_SEARCH_FILTER}`);
+          fallbackQueries.push(`brazilian phonk montage bass boosted ${NEGATIVE_SEARCH_FILTER}`);
+        } else if (dominantCulture === "english") {
+          fallbackQueries.push(`top acoustic indie pop songs official audio ${NEGATIVE_SEARCH_FILTER}`);
+          fallbackQueries.push(`viral english acoustic hits official audio ${NEGATIVE_SEARCH_FILTER}`);
+        } else {
+          fallbackQueries.push(`top viral acoustic melodic hits official audio ${NEGATIVE_SEARCH_FILTER}`);
+          fallbackQueries.push(`latest global indie pop songs official audio ${NEGATIVE_SEARCH_FILTER}`);
+        }
+
+        const fallbackResults = await Promise.allSettled(
+          fallbackQueries.map((q) =>
+            fetchYouTubeCategoryTracks(q, "relevance", 15, dominantCulture as SectionId, "Quick Picks")
+          )
+        );
+        for (const res of fallbackResults) {
+          if (res.status === "fulfilled" && Array.isArray(res.value)) {
+            for (const track of res.value) {
+              if (finalSelection.length >= targetCount) break;
+              addCandidate(track);
+            }
           }
         }
       }
-    }
 
-    const synthesized = deduplicateCoreSongVariations(deduplicateYouTubeTracks(finalSelection), 0.70);
-    const withPrepended = mergePrependedTracks("quick-picks", synthesized);
-    const finalResult = withPrepended.slice(0, targetCount);
-    quickPicksCache = { data: finalResult, timestamp: Date.now() };
-    quickPicksFlight = null;
-    return finalResult;
-  } catch (err) {
-    quickPicksFlight = null;
-    console.warn("[QuickPicksEngine] Synthesis error:", err);
-    return [];
-  }
+      const synthesized = deduplicateCoreSongVariations(deduplicateYouTubeTracks(finalSelection), 0.70);
+      const withPrepended = mergePrependedTracks("quick-picks", synthesized);
+      const finalResult = withPrepended.slice(0, targetCount);
+      quickPicksCache = { data: finalResult, timestamp: Date.now() };
+      quickPicksFlight = null;
+      return finalResult;
+    } catch (err) {
+      quickPicksFlight = null;
+      console.warn("[QuickPicksEngine] Synthesis error:", err);
+      return [];
+    }
   })();
   return quickPicksFlight;
 }
@@ -901,9 +901,9 @@ export function prependToUserQuickPicks(song: Song): void {
 export function cleanLegacyPrependedSections(): void {
   try {
     localStorage.removeItem(LEGACY_QUICK_PICKS_KEY);
-  } catch {}
+  } catch { }
 }
 
 export function startEngagementTracking(): () => void {
-  return () => {};
+  return () => { };
 }

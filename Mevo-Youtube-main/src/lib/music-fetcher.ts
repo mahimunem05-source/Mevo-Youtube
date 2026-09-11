@@ -3,6 +3,7 @@ import { getSongs } from '@/services/songService';
 import { getExtractorBaseUrl } from './extractor';
 import { supabase } from '@/lib/supabase';
 import { deduplicateYouTubeTracks } from '@/services/youtube';
+import { isShortsVideo, filterAndRankSectionTracks } from './youtube-discovery';
 
 // Banned keywords for non-music / shorts / loops / compilations / recaps
 const BANNED_KEYWORDS = [
@@ -91,10 +92,12 @@ export async function fetchYouTubeSearchTracks(
       const title = (item.title || '').toLowerCase();
       const channel = (item.channelTitle || item.channel || item.uploader || item.artist || '').toLowerCase();
       const dur = typeof item.duration === 'number' ? item.duration : 0;
+      const isShort = isShortsVideo(item.title || '', item.description || '', dur);
       const isBanned =
+        isShort ||
         BANNED_KEYWORDS.some((kw) => title.includes(kw) || channel.includes(kw)) ||
         BANNED_CHANNELS.some((bc) => channel.includes(bc));
-      const isValidDuration = dur === 0 || (dur >= 60 && dur <= 480);
+      const isValidDuration = dur === 0 || (dur >= 55 && dur <= 480);
 
       if (!isBanned && isValidDuration) {
         seenIds.add(item.id);
@@ -196,7 +199,7 @@ export async function fetchCustomMevoPulse(): Promise<UnifiedSong[]> {
       const data = await res.json();
       const items = data.items || [];
       if (Array.isArray(items) && items.length > 0) {
-        return items.map((item: any) => ({
+        const pulseTracks = items.map((item: any) => ({
           id: item.id,
           title: item.title || 'Unknown Track',
           artist: item.artist || item.channelTitle || 'YouTube Artist',
@@ -205,7 +208,10 @@ export async function fetchCustomMevoPulse(): Promise<UnifiedSong[]> {
           source: 'youtube' as const,
           youtubeId: item.id,
           duration: item.duration ? `${Math.floor(item.duration / 60)}:${String(item.duration % 60).padStart(2, '0')}` : 'YouTube',
+          viewCount: item.viewCount || item.view_count || 0,
+          publishedAt: item.publishedAt,
         }));
+        return filterAndRankSectionTracks(pulseTracks, 'mevo-pulse');
       }
     }
 
@@ -214,7 +220,7 @@ export async function fetchCustomMevoPulse(): Promise<UnifiedSong[]> {
       'top trending hindi bollywood english pop phonk viral official audio',
       50
     );
-    return fallbackRes.songs;
+    return filterAndRankSectionTracks(fallbackRes.songs, 'mevo-pulse');
   } catch (error) {
     console.error('Error creating MEVO Pulse feed:', error);
     return [];
@@ -274,5 +280,5 @@ export async function getSectionSongs(section: SectionConfig): Promise<UnifiedSo
     return await fetchLocalMahiSelect();
   }
   const res = await fetchYouTubeSearchTracks(section.query || `${section.title} official audio`, 50);
-  return res.songs;
+  return filterAndRankSectionTracks(res.songs, section.id);
 }

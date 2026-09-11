@@ -38,15 +38,15 @@ export function detectTrackCategory(
     };
   }
 
-  // 2. Boost Aura / Phonk / Bass detection (high priority for drift phonk & heavy 808s)
+  // 2. Boost Aura / Authentic Phonk detection
   if (
-    /\b(?:phonk|drift|kordhell|giga chad|bass boosted|brazilian phonk|montagem|slowed|reverb|speed up|nightcore|hardstyle|dxrk|memphis|boosted|sigma|trollface|gigachad|cowbell|hxvry|scooter|shadow dance|funk)\b/i.test(
+    /\b(?:drift phonk|brazilian phonk|memphis phonk|wave phonk|phonk|montagem|kordhell|interworld|dxrk|dvrst|hensonn|shadxwbxrn|gvescx|cowbell|hxvry|plphonk|automotivo|funk bolha)\b/i.test(
       combined,
     )
   ) {
     return {
       id: "boost-aura",
-      title: "Boost Aura",
+      title: "Aura Phonk",
       sectionId: "boost-aura",
     };
   }
@@ -65,24 +65,26 @@ export function detectTrackCategory(
     };
   }
 
-  // 4. English / Mainstream Pop / Billboard
+  // 4. Sonic World: International Languages ONLY (K-Pop, J-Pop, Latin, Afrobeats, etc.)
+  // Strictly non-Bangla, non-Hindi, and non-English
   if (
-    /\b(?:the weeknd|taylor swift|drake|billie eilish|dua lipa|ed sheeran|bruno mars|ariana grande|justin bieber|eminem|post malone|rihanna|coldplay|imagine dragons|maroon 5|charlie puth|olivia rodrigo|harry styles|sam smith|selena gomez|katy perry|shawn mendes|adele|beyonce|lady gaga|travis scott|kanye|kendrick|mariah carey|snoop dogg|twenty one pilots|chainsmokers|marshmello|alan walker|kygo|david guetta|calvin harris|english|pop|billboard|grammy|top hits|official audio|official video|vevo)\b/i.test(
+    /[\uAC00-\uD7AF\u3040-\u30FF\u4E00-\u9FAF]/.test(combined) ||
+    /\b(?:kpop|k-pop|bts|blackpink|newjeans|stray kids|twice|seventeen|jpop|j-pop|yoasobi|kenshi yonezu|reggaeton|bad bunny|rosalia|karol g|peso pluma|afrobeats|burna boy|rema|ayra starr|wizkid|asake|tems|aya nakamura|stromae)\b/i.test(
       combined,
     )
   ) {
     return {
-      id: "english-essence",
-      title: "English Essence",
-      sectionId: "english",
+      id: "sonic-world",
+      title: "Sonic World",
+      sectionId: "global",
     };
   }
 
-  // 5. Default: Sonic World (Global / K-Pop / Latin / Anime / Other international)
+  // 5. Default / English Mainstream Pop
   return {
-    id: "sonic-world",
-    title: "Sonic World",
-    sectionId: "global",
+    id: "english-essence",
+    title: "English Essence",
+    sectionId: "english",
   };
 }
 

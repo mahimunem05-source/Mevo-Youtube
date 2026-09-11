@@ -133,6 +133,11 @@ export function getExtractorBaseUrl(): string {
     return "";
   }
 
+  // Node.js CLI / testing fallback to active local dev server
+  if (typeof window === "undefined" && typeof process !== "undefined" && process.env?.NODE_ENV !== "production") {
+    return "http://localhost:5173";
+  }
+
   const configured = metaEnv.VITE_EXTRACTOR_URL || metaEnv.VITE_EXTRACTOR_API_URL;
   if (configured) {
     return configured.replace(/\/+$/, "");

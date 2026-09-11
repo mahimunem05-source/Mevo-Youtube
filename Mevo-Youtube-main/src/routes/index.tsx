@@ -118,11 +118,11 @@ export function Index() {
             if (sec.type === "chart") {
               const songs = await fetchYouTubeTrending(
                 sec.regionCode || "BD",
-                16,
+                20,
                 "bangla",
                 sec.title
               );
-              return { id: sec.id, songs: songs.slice(0, 16) };
+              return { id: sec.id, songs };
             } else if (sec.type === "search" && sec.query) {
               const sectionId: SectionId =
                 sec.id === "bengal-echo"
@@ -137,12 +137,12 @@ export function Index() {
 
               const songs = await fetchYouTubeCategoryTracks(
                 sec.query,
-                sec.order || "viewCount",
-                16,
+                sec.order || "relevance",
+                20,
                 sectionId,
                 sec.title
               );
-              return { id: sec.id, songs: songs.slice(0, 16) };
+              return { id: sec.id, songs };
             }
           } catch (err) {
             console.warn(`Failed to fetch section ${sec.id} from YouTube:`, err);
@@ -153,7 +153,7 @@ export function Index() {
 
       for (const res of settledResults) {
         if (res.status === "fulfilled" && res.value) {
-          results[res.value.id] = mergePrependedTracks(res.value.id, res.value.songs).slice(0, 16);
+          results[res.value.id] = mergePrependedTracks(res.value.id, res.value.songs);
         }
       }
       return results;
@@ -408,18 +408,23 @@ function getSongDedupeKeys(song: PlayerSong): string[] {
   const { dedupedQuickPicks, displayRows } = useMemo(() => {
     const globalSeen = new Set<string>();
 
-    // A. Deduplicate Quick Picks / Made For You
+    // A. Deduplicate Quick Picks / Made For You (Target: exactly 15 songs)
     const filteredQuickPicks: PlayerSong[] = [];
+    const intraQuickPicksSeen = new Set<string>();
     for (const song of rawQuickPicks) {
       const keys = getSongDedupeKeys(song);
-      const isDupe = keys.some((k) => globalSeen.has(k));
+      const isDupe = keys.some((k) => intraQuickPicksSeen.has(k));
       if (!isDupe) {
-        for (const k of keys) globalSeen.add(k);
+        for (const k of keys) {
+          intraQuickPicksSeen.add(k);
+          globalSeen.add(k);
+        }
         filteredQuickPicks.push(song);
       }
+      if (filteredQuickPicks.length >= 15) break;
     }
 
-    // B. Deduplicate Category Rows (MEVO Pulse, Bengal Echo, Hindi Reverie, etc.)
+    // B. Deduplicate Category Rows (MEVO Pulse, Bengal Echo, Hindi Reverie, etc. Target: exactly 15 songs)
     const rows: { section: DisplaySection; songs: PlayerSong[] }[] = [];
     const prioritizedConfigs = rankCategoriesByAffinity(HOME_SECTIONS);
 
@@ -458,20 +463,40 @@ function getSongDedupeKeys(song: PlayerSong): string[] {
         const rankedTracks =
           config.id === "mahi-select" ? trackList : rankTracksByAffinity(trackList);
 
+        const intraSectionSeen = new Set<string>();
         const uniqueTracks: PlayerSong[] = [];
+        const deferredTracks: PlayerSong[] = [];
+
         for (const song of rankedTracks) {
           const keys = getSongDedupeKeys(song);
-          const isDupe = keys.some((k) => globalSeen.has(k));
-          if (!isDupe) {
-            for (const k of keys) globalSeen.add(k);
+          // Never duplicate within the same section carousel
+          const isIntraDupe = keys.some((k) => intraSectionSeen.has(k));
+          if (isIntraDupe) continue;
+
+          for (const k of keys) intraSectionSeen.add(k);
+
+          // Check if already seen in earlier sections on the page
+          const isCrossDupe = keys.some((k) => globalSeen.has(k));
+          if (!isCrossDupe) {
             uniqueTracks.push(song);
+            for (const k of keys) globalSeen.add(k);
+          } else {
+            deferredTracks.push(song);
           }
         }
 
-        if (uniqueTracks.length > 0) {
+        // Target = exactly 15 valid songs. If cross-section deduplication left fewer than 15,
+        // backfill with deferred unique tracks from this section so the section reliably renders 15 cards.
+        for (const song of deferredTracks) {
+          if (uniqueTracks.length >= 15) break;
+          uniqueTracks.push(song);
+        }
+
+        const finalSectionSongs = uniqueTracks.slice(0, 15);
+        if (finalSectionSongs.length > 0) {
           rows.push({
             section: sectionDef,
-            songs: uniqueTracks,
+            songs: finalSectionSongs,
           });
         }
       }

@@ -584,6 +584,66 @@ def is_blacklisted_media(title: str, channel: str, description: str = "") -> boo
 
     return False
 
+SHORTS_MEDIA_RE = re.compile(r"#(?:shorts|short)\b|\bshorts\b|\bshort video\b|\btiktok\b|\/shorts\/|\(shorts\)|\[shorts\]|\breels?\b|\bytshorts\b", re.IGNORECASE)
+
+def is_shorts_media(title: str, description: str = "", duration: int = 0) -> bool:
+    if SHORTS_MEDIA_RE.search(title or "") or SHORTS_MEDIA_RE.search(description or ""):
+        return True
+    if duration and 0 < duration < 55:
+        return True
+    return False
+
+def calculate_python_track_score(item: dict) -> float:
+    now = time.time()
+    pub_str = item.get("publishedAt")
+    pub_time = 0
+    if pub_str:
+        try:
+            if "T" in str(pub_str):
+                dt = datetime.fromisoformat(str(pub_str).replace("Z", "+00:00"))
+                pub_time = dt.timestamp()
+            elif len(str(pub_str)) == 8 and str(pub_str).isdigit():
+                dt = datetime.strptime(str(pub_str), "%Y%m%d")
+                pub_time = dt.timestamp()
+        except Exception:
+            pass
+
+    days = max(0.2, (now - pub_time) / 86400.0) if pub_time > 0 else 365.0
+    views = max(0, int(item.get("viewCount") or item.get("view_count") or 0))
+
+    import math
+    daily_velocity = views / days
+    hype_score = math.log10(max(1.0, daily_velocity)) * 12.0
+    popularity_score = math.log10(max(1.0, views)) * 4.0
+
+    base_freshness = 0.0
+    if days <= 7:
+        base_freshness = 40.0
+    elif days <= 30:
+        base_freshness = 30.0
+    elif days <= 90:
+        base_freshness = 20.0
+    elif days <= 180:
+        base_freshness = 10.0
+    elif days <= 365:
+        base_freshness = 5.0
+    elif days <= 730:
+        base_freshness = 0.0
+    elif days <= 1460:
+        base_freshness = -12.0
+    elif days <= 2555:
+        base_freshness = -24.0
+    else:
+        base_freshness = -38.0
+
+    momentum_scale = min(1.0, max(0.1, daily_velocity / 50.0)) if base_freshness > 0 else 1.0
+    freshness = base_freshness * momentum_scale
+
+    official_score = get_official_content_score(item.get("artist") or item.get("channelTitle") or "", item.get("title") or "")
+    official_bonus = 15.0 if official_score >= 60 else 0.0
+
+    return hype_score + popularity_score + freshness + official_bonus
+
 def clean_title_and_artist(raw_title: str, channel_name: str) -> tuple[str, str]:
     title = raw_title or "Unknown Title"
     artist = channel_name or "YouTube Artist"
@@ -969,12 +1029,12 @@ def execute_search(query: str, limit: int = 25, search_type: str = "general", pa
     return single_flight.execute(f"flight:{cache_key}", _do_search)
 
 
-def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "bangla") -> list[dict]:
+def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "bangla", page_token: str = None) -> tuple[list[dict], str | None]:
     """
-    Fetches the blended MEVO Pulse trending feed with Hindi, English, Phonk, Sonic World,
-    and Bangla tracks interleaved, deduplicated, and cached for 25 minutes.
+    Fetches the live YouTube MEVO Pulse trending feed via official music charts (chart=mostPopular&videoCategoryId=10),
+    filtered for shorts, non-music, and ranked by current velocity, freshness, and popularity.
     """
-    cache_key = f"youtube:trending:{region}:{limit}"
+    cache_key = f"youtube:trending:{region}:{limit}:{page_token or '0'}"
     cached = search_cache.get(cache_key)
     if cached is not None:
         request_budget.record_request("trending", hit=True)
@@ -982,12 +1042,96 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
 
     def _generate_trending():
         request_budget.record_request("trending", hit=False, upstream=True)
+        base_url = get_base_url()
+
+        # 1. First priority: Official YouTube Music Chart (chart=mostPopular&videoCategoryId=10)
+        key = key_pool.get_active_key()
+        if key:
+            try:
+                with youtube_api_semaphore:
+                    t_url = "https://www.googleapis.com/youtube/v3/videos"
+                    t_params = {
+                        "part": "snippet,contentDetails,statistics,status",
+                        "chart": "mostPopular",
+                        "videoCategoryId": "10",
+                        "regionCode": region,
+                        "maxResults": 50,
+                        "key": key
+                    }
+                    if page_token:
+                        t_params["pageToken"] = page_token
+                    t_res = requests.get(t_url, params=t_params, timeout=8)
+                    if t_res.status_code == 403:
+                        key_pool.mark_key_exhausted(key, "403 on chart trending")
+                    elif t_res.ok:
+                        data = t_res.json()
+                        raw_items = data.get("items", [])
+                        next_page_token = data.get("nextPageToken")
+                        valid_items = []
+                        seen_ids = set()
+                        for it in raw_items:
+                            vid_id = it.get("id")
+                            if not vid_id or vid_id in seen_ids:
+                                continue
+                            snippet = it.get("snippet", {})
+                            content = it.get("contentDetails", {})
+                            stats = it.get("statistics", {})
+                            status = it.get("status", {})
+
+                            if status.get("embeddable") is False or status.get("madeForKids") or status.get("selfDeclaredMadeForKids"):
+                                continue
+
+                            raw_t = snippet.get("title", "")
+                            channel = snippet.get("channelTitle", "")
+                            desc = snippet.get("description", "")
+                            dur = parse_iso8601_duration(content.get("duration", ""))
+
+                            if is_blacklisted_media(raw_t, channel, desc) or is_shorts_media(raw_t, desc, dur):
+                                continue
+                            if dur > 0 and (dur < 55 or dur > 480):
+                                continue
+
+                            thumbnails = snippet.get("thumbnails", {})
+                            thumb = (
+                                thumbnails.get("maxres", {}).get("url")
+                                or thumbnails.get("high", {}).get("url")
+                                or thumbnails.get("medium", {}).get("url")
+                                or f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
+                            )
+                            views = int(stats.get("viewCount", 0)) if str(stats.get("viewCount", "")).isdigit() else 0
+
+                            seen_ids.add(vid_id)
+                            uniform = build_uniform_item(
+                                vid_id=vid_id,
+                                raw_title=raw_t,
+                                channel=channel,
+                                thumbnail=thumb,
+                                duration=dur,
+                                view_count=views,
+                                published_at=snippet.get("publishedAt"),
+                                description=desc,
+                                base_url=base_url
+                            )
+                            uniform["section"] = section_id
+                            uniform["category"] = "MEVO Pulse"
+                            uniform["trending"] = True
+                            valid_items.append(uniform)
+
+                        if valid_items:
+                            valid_items.sort(key=lambda x: calculate_python_track_score(x), reverse=True)
+                            res = (valid_items, next_page_token)
+                            search_cache.set(cache_key, res, ttl=1200)
+                            return res
+            except Exception as e:
+                logging.warning(f"[fetch_trending_feed] YouTube API chart error: {e}")
+
+        # 2. Fallback: Multi-category fresh music candidate search
         PULSE_CATEGORIES = [
-            ("hindi", "latest hindi songs official audio -top10 -top20 -top50 -top100 -recap -countdown -ranking"),
-            ("english", "viral english pop songs official audio -billboard -top10 -top20 -top50 -top100 -recap -countdown -ranking"),
-            ("boost-aura", "drift phonk official audio -top10 -top20 -top50 -top100 -recap -countdown -ranking"),
-            ("global", "kpop official audio | spanish latin viral official audio -billboard -top10 -top20 -top50 -top100 -recap -countdown -ranking"),
-            ("bangla", "bangla popular songs band official audio -top10 -top20 -top50 -top100 -recap -countdown -ranking"),
+            ("hindi", "latest hindi official audio songs | trending bollywood music video -top10 -top20 -top50 -recap"),
+            ("english", "viral english pop official audio | new english songs official -billboard -top10 -top20 -recap"),
+            ("boost-aura", "drift phonk official audio | brazilian phonk viral audio -top10 -top20 -recap"),
+            ("global", "kpop official audio | latin viral hits official video | afrobeats official audio -billboard -top10 -recap"),
+            ("bangla", "new bangla songs official music video | latest bangla band official audio -top10 -top20 -recap"),
         ]
         category_target = max(10, (limit // len(PULSE_CATEGORIES)) + 2)
         category_lists = []
@@ -1015,36 +1159,45 @@ def fetch_trending_feed(region: str = "BD", limit: int = 50, section_id: str = "
                     vid_id = item.get("id")
                     if vid_id and vid_id not in seen_ids:
                         dur = item.get("duration", 0)
-                        if not dur or (60 <= dur <= 480):
+                        raw_t = item.get("title", "")
+                        desc = item.get("description", "")
+                        if is_shorts_media(raw_t, desc, dur):
+                            continue
+                        if not dur or (55 <= dur <= 480):
                             seen_ids.add(vid_id)
                             blended.append(item)
 
-        if len(blended) >= limit:
+        if blended:
+            blended.sort(key=lambda x: calculate_python_track_score(x), reverse=True)
             res = blended[:limit]
-            search_cache.set(cache_key, res, ttl=1500)
+            search_cache.set(cache_key, res, ttl=1200)
             return res
 
-        # Fallback if short of target
+        # 3. Final Fallback
         fallback_items, _, _ = execute_search(
             "latest hindi bollywood english pop phonk viral official audio -billboard -top10 -top20 -top50 -top100 -recap -countdown",
-            limit=limit
+            limit=limit * 2
         )
+        final_list = []
         for it in fallback_items:
             vid_id = it.get("id")
             if vid_id and vid_id not in seen_ids:
                 dur = it.get("duration", 0)
-                if not dur or (60 <= dur <= 480):
+                raw_t = it.get("title", "")
+                desc = it.get("description", "")
+                if is_shorts_media(raw_t, desc, dur):
+                    continue
+                if not dur or (55 <= dur <= 480):
                     seen_ids.add(vid_id)
                     song_it = dict(it)
                     song_it["section"] = section_id
                     song_it["category"] = "MEVO Pulse"
                     song_it["trending"] = True
-                    blended.append(song_it)
-                if len(blended) >= limit:
-                    break
+                    final_list.append(song_it)
 
-        res = blended[:limit]
-        search_cache.set(cache_key, res, ttl=1500)
+        final_list.sort(key=lambda x: calculate_python_track_score(x), reverse=True)
+        res = final_list[:limit]
+        search_cache.set(cache_key, res, ttl=1200)
         return res
 
     return single_flight.execute(f"flight:{cache_key}", _generate_trending)
@@ -1063,21 +1216,32 @@ def fetch_category_feed(query: str, order: str = "viewCount", limit: int = 25, p
 
     def _do_category():
         request_budget.record_request("category", hit=False, upstream=True)
-        items, next_token, source = execute_search(query, limit=limit, search_type="category", page_token=page_token)
+        search_limit = 50
+        items, next_token, source = execute_search(query, limit=search_limit, search_type="category", page_token=page_token)
         songs = []
         for it in items:
+            raw_t = it.get("title", "")
+            desc = it.get("description", "")
+            dur = it.get("duration", 0)
+            if is_shorts_media(raw_t, desc, dur):
+                continue
+            if dur and (dur < 55 or dur > 480):
+                continue
             song_it = dict(it)
             song_it["section"] = section_id
             song_it["category"] = category_title
             songs.append(song_it)
 
+        songs.sort(key=lambda x: calculate_python_track_score(x), reverse=True)
+        sliced_songs = songs
+
         result = {
-            "songs": songs,
+            "songs": sliced_songs,
             "nextPageToken": next_token,
-            "count": len(songs),
+            "count": len(sliced_songs),
             "source": source
         }
-        search_cache.set(cache_key, result, ttl=2700)
+        search_cache.set(cache_key, result, ttl=1800)
         return result
 
     return single_flight.execute(f"flight:{cache_key}", _do_category)
@@ -1221,12 +1385,14 @@ def trending_endpoint():
         limit = int(request.args.get("limit") or 50)
         limit = max(1, min(100, limit))
         section_id = request.args.get("sectionId") or "bangla"
+        page_token = request.args.get("pageToken") or request.args.get("page_token")
 
-        items = fetch_trending_feed(region=region, limit=limit, section_id=section_id)
+        items, next_page_token = fetch_trending_feed(region=region, limit=limit, section_id=section_id, page_token=page_token)
         return jsonify({
             "items": items,
             "count": len(items),
-            "region": region
+            "region": region,
+            "nextPageToken": next_page_token
         })
     except Exception as e:
         logging.error(f"Trending endpoint error: {e}")

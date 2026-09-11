@@ -92,6 +92,41 @@ function parseIsoDuration(durationStr: string): number {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
+const SHORTS_REGEX = /#(?:shorts|short)\b|\bshorts\b|\bshort video\b|\btiktok\b|\/shorts\/|\(shorts\)|\[shorts\]/i;
+
+function isShorts(title: string, desc = "", durationSec = 0): boolean {
+  if (SHORTS_REGEX.test(title) || SHORTS_REGEX.test(desc)) return true;
+  if (durationSec > 0 && durationSec < 55) return true;
+  return false;
+}
+
+function calculateScore(item: { publishedAt?: string; viewCount?: number; duration?: number }): number {
+  const now = Date.now();
+  const pubTime = item.publishedAt ? Date.parse(item.publishedAt) : 0;
+  const days = pubTime > 0 ? Math.max(0.2, (now - pubTime) / (1000 * 60 * 60 * 24)) : 365;
+  const views = Math.max(0, item.viewCount || 0);
+
+  const dailyVelocity = views / days;
+  const hypeScore = Math.log10(Math.max(1, dailyVelocity)) * 12;
+  const popularityScore = Math.log10(Math.max(1, views)) * 4;
+
+  let baseFreshness = 0;
+  if (days <= 7) baseFreshness = 40;
+  else if (days <= 30) baseFreshness = 30;
+  else if (days <= 90) baseFreshness = 20;
+  else if (days <= 180) baseFreshness = 10;
+  else if (days <= 365) baseFreshness = 5;
+  else if (days <= 730) baseFreshness = 0;
+  else if (days <= 1460) baseFreshness = -12;
+  else if (days <= 2555) baseFreshness = -24;
+  else baseFreshness = -38;
+
+  const momentumScale = baseFreshness > 0 ? Math.min(1.0, Math.max(0.1, dailyVelocity / 50.0)) : 1.0;
+  const freshness = baseFreshness * momentumScale;
+
+  return hypeScore + popularityScore + freshness;
+}
+
 async function getDirectAudioUrl(videoId: string): Promise<string | null> {
   const cleanId = videoId.replace(/^yt-/, "").trim();
   if (!cleanId) return null;
@@ -142,7 +177,9 @@ export function devYouTubePlugin(): Plugin {
       const data = await res.json();
       if (data.error) {
         const code = data.error.code;
-        if (code === 403) {
+        const msg = (data.error.message || "").toLowerCase();
+        const status = data.error.status || "";
+        if (code === 403 || code === 429 || status === "RESOURCE_EXHAUSTED" || msg.includes("quota") || msg.includes("exceeded")) {
           pool.markExhausted(key);
           continue;
         }
@@ -166,13 +203,14 @@ export function devYouTubePlugin(): Plugin {
       try {
         const data = await fetchWithKey(
           (key) =>
-            `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${batch.join(",")}&key=${key}`
+            `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,status&id=${batch.join(",")}&key=${key}`
         );
         for (const it of data.items || []) {
           const id = it.id;
           const snippet = it.snippet || {};
           const content = it.contentDetails || {};
           const stats = it.statistics || {};
+          const status = it.status || {};
           const duration = parseIsoDuration(content.duration || "");
           const viewCount = parseInt(stats.viewCount || "0", 10);
           const thumb =
@@ -191,6 +229,8 @@ export function devYouTubePlugin(): Plugin {
             viewCount,
             publishedAt: snippet.publishedAt || "",
             description: snippet.description || "",
+            embeddable: status.embeddable !== false,
+            isMadeForKids: Boolean(status.madeForKids || status.selfDeclaredMadeForKids),
           });
         }
       } catch (err) {
@@ -211,9 +251,10 @@ export function devYouTubePlugin(): Plugin {
         // 1. /api/youtube/trending
         if (pathname === "/api/youtube/trending" || pathname === "/api/trending") {
           const region = urlObj.searchParams.get("region") || "BD";
-          const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "16", 10)));
+          const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "15", 10)));
           const sectionId = urlObj.searchParams.get("sectionId") || "bangla";
-          const cacheKey = `trending:${region}:${limit}`;
+          const pageToken = urlObj.searchParams.get("pageToken") || "";
+          const cacheKey = `trending:${region}:${limit}:${pageToken}`;
 
           const cached = cache.get(cacheKey);
           if (cached) {
@@ -224,32 +265,52 @@ export function devYouTubePlugin(): Plugin {
           }
 
           try {
+            const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
             const data = await fetchWithKey(
               (key) =>
-                `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&chart=mostPopular&videoCategoryId=10&regionCode=${encodeURIComponent(region)}&maxResults=${limit}&key=${key}`
+                `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,status&chart=mostPopular&videoCategoryId=10&regionCode=${encodeURIComponent(region)}&maxResults=50${pageParam}&key=${key}`
             );
-            const items = (data.items || []).map((it: any) => {
-              const snippet = it.snippet || {};
-              const content = it.contentDetails || {};
-              const stats = it.statistics || {};
-              const id = it.id;
-              return {
-                id,
-                title: snippet.title || "",
-                artist: snippet.channelTitle || "",
-                thumbnail:
-                  snippet.thumbnails?.maxres?.url ||
-                  snippet.thumbnails?.high?.url ||
-                  snippet.thumbnails?.medium?.url ||
-                  `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
-                duration: parseIsoDuration(content.duration || ""),
-                viewCount: parseInt(stats.viewCount || "0", 10),
-                publishedAt: snippet.publishedAt || "",
-                section: sectionId,
-              };
-            });
-            const result = { items, count: items.length, source: "youtube_api" };
-            cache.set(cacheKey, result, 1500); // 25 min TTL
+            const items = (data.items || [])
+              .map((it: any) => {
+                const snippet = it.snippet || {};
+                const content = it.contentDetails || {};
+                const stats = it.statistics || {};
+                const status = it.status || {};
+                const id = it.id;
+                const dur = parseIsoDuration(content.duration || "");
+                const title = snippet.title || "";
+                const desc = snippet.description || "";
+                const embeddable = status.embeddable !== false;
+                const madeForKids = Boolean(status.madeForKids || status.selfDeclaredMadeForKids);
+
+                return {
+                  id,
+                  title,
+                  artist: snippet.channelTitle || "",
+                  thumbnail:
+                    snippet.thumbnails?.maxres?.url ||
+                    snippet.thumbnails?.high?.url ||
+                    snippet.thumbnails?.medium?.url ||
+                    `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
+                  duration: dur,
+                  viewCount: parseInt(stats.viewCount || "0", 10),
+                  publishedAt: snippet.publishedAt || "",
+                  section: sectionId,
+                  embeddable,
+                  madeForKids,
+                  description: desc,
+                };
+              })
+              .filter((it: any) => {
+                if (!it.id || it.embeddable === false || it.madeForKids) return false;
+                if (it.duration > 0 && (it.duration < 55 || it.duration > 480)) return false;
+                if (isShorts(it.title, it.description, it.duration)) return false;
+                return true;
+              })
+              .sort((a: any, b: any) => calculateScore(b) - calculateScore(a));
+
+            const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api" };
+            cache.set(cacheKey, result, 1200); // 20 min TTL
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(result));
@@ -266,7 +327,7 @@ export function devYouTubePlugin(): Plugin {
         if (pathname === "/api/youtube/category" || pathname === "/api/category") {
           const query = urlObj.searchParams.get("q") || "";
           const order = urlObj.searchParams.get("order") || "viewCount";
-          const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "16", 10)));
+          const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "15", 10)));
           const sectionId = urlObj.searchParams.get("sectionId") || "bangla";
           const pageToken = urlObj.searchParams.get("pageToken") || "";
           const cacheKey = `category:${query}:${order}:${limit}:${pageToken}`;
@@ -283,27 +344,38 @@ export function devYouTubePlugin(): Plugin {
             const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
             const data = await fetchWithKey(
               (key) =>
-                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&order=${encodeURIComponent(order)}&maxResults=${limit}${pageParam}&key=${key}`
+                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&order=${encodeURIComponent(order)}&maxResults=50${pageParam}&key=${key}`
             );
             const videoIds = (data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
             const details = await getVideoDetails(videoIds);
 
-            const songs = videoIds.map((id: string) => {
-              const d = details.get(id);
-              return {
-                id,
-                title: d?.title || "",
-                artist: d?.channelTitle || "",
-                thumbnail: d?.thumbnail || `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
-                duration: d?.duration || 0,
-                viewCount: d?.viewCount || 0,
-                publishedAt: d?.publishedAt || "",
-                section: sectionId,
-              };
-            });
+            const songs = videoIds
+              .map((id: string) => {
+                const d = details.get(id);
+                return {
+                  id,
+                  title: d?.title || "",
+                  artist: d?.channelTitle || "",
+                  thumbnail: d?.thumbnail || `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
+                  duration: d?.duration || 0,
+                  viewCount: d?.viewCount || 0,
+                  publishedAt: d?.publishedAt || "",
+                  section: sectionId,
+                  embeddable: d?.embeddable !== false,
+                  isMadeForKids: Boolean(d?.isMadeForKids),
+                  description: d?.description || "",
+                };
+              })
+              .filter((s: any) => {
+                if (!s.id || s.embeddable === false || s.isMadeForKids) return false;
+                if (s.duration > 0 && (s.duration < 55 || s.duration > 480)) return false;
+                if (isShorts(s.title, s.description, s.duration)) return false;
+                return true;
+              })
+              .sort((a: any, b: any) => calculateScore(b) - calculateScore(a));
 
             const result = { songs, nextPageToken: data.nextPageToken || null, count: songs.length };
-            cache.set(cacheKey, result, 2700); // 45 min TTL
+            cache.set(cacheKey, result, 1800); // 30 min TTL
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(result));
@@ -341,7 +413,8 @@ export function devYouTubePlugin(): Plugin {
         if (pathname === "/api/search") {
           const query = urlObj.searchParams.get("q") || "";
           const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "12", 10)));
-          const cacheKey = `search:${query}:${limit}`;
+          const pageToken = urlObj.searchParams.get("pageToken") || "";
+          const cacheKey = `search:${query}:${limit}:${pageToken}`;
 
           const cached = cache.get(cacheKey);
           if (cached) {
@@ -352,28 +425,41 @@ export function devYouTubePlugin(): Plugin {
           }
 
           try {
+            const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+            const searchLimit = Math.min(50, Math.max(limit * 2, 25));
             const data = await fetchWithKey(
               (key) =>
-                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&maxResults=${limit}&key=${key}`
+                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&maxResults=${searchLimit}${pageParam}&key=${key}`
             );
             const videoIds = (data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
             const details = await getVideoDetails(videoIds);
 
-            const items = videoIds.map((id: string) => {
-              const d = details.get(id);
-              return {
-                id,
-                title: d?.title || "",
-                artist: d?.channelTitle || "",
-                thumbnail: d?.thumbnail || `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
-                duration: d?.duration || 0,
-                viewCount: d?.viewCount || 0,
-                publishedAt: d?.publishedAt || "",
-                stream_url: `https://mevo-extractor.onrender.com/stream?id=${id}`,
-              };
-            });
+            const items = videoIds
+              .map((id: string) => {
+                const d = details.get(id);
+                return {
+                  id,
+                  title: d?.title || "",
+                  artist: d?.channelTitle || "",
+                  thumbnail: d?.thumbnail || `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
+                  duration: d?.duration || 0,
+                  viewCount: d?.viewCount || 0,
+                  publishedAt: d?.publishedAt || "",
+                  stream_url: `https://mevo-extractor.onrender.com/stream?id=${id}`,
+                  embeddable: d?.embeddable !== false,
+                  isMadeForKids: Boolean(d?.isMadeForKids),
+                  description: d?.description || "",
+                };
+              })
+              .filter((it: any) => {
+                if (it.embeddable === false || it.isMadeForKids) return false;
+                if (it.duration > 0 && (it.duration < 55 || it.duration > 480)) return false;
+                if (isShorts(it.title, it.description, it.duration)) return false;
+                return true;
+              })
+              .slice(0, limit);
 
-            const result = { items, count: items.length, source: "youtube_api", query };
+            const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api", query };
             cache.set(cacheKey, result, 7200); // 2 hour TTL
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
