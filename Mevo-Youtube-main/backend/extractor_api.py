@@ -11,7 +11,7 @@ import logging
 import threading
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from flask import Flask, request, send_file, jsonify, redirect, Response
+from flask import Flask, request, send_file, jsonify, redirect, Response, stream_with_context
 import tempfile
 from flask_cors import CORS
 import requests
@@ -528,17 +528,96 @@ def build_watch_url(input_str: str) -> str:
         return input_str
     return f"https://www.youtube.com/watch?v={input_str}"
 
-def get_base_ydl_opts():
-    """Universal yt-dlp config with Bot-Bypass player clients"""
+YOUTUBE_COOKIE_PATH: Path | None = None
+
+def init_youtube_cookies() -> Path | None:
+    """
+    Safely initializes YouTube cookie file from environment variables or local file.
+    Supports:
+    - YOUTUBE_COOKIES (raw Netscape cookies text)
+    - YOUTUBE_COOKIES_BASE64 (base64-encoded Netscape cookies text)
+    - YOUTUBE_COOKIE_FILE (file path)
+    - cookies.txt in backend or project root
+    Cookies are written to a secure temporary file with 0600 permissions in TEMP_AUDIO_DIR.
+    Never exposed to client or frontend bundle.
+    """
+    global YOUTUBE_COOKIE_PATH
+    try:
+        # 1. Check raw cookie content from environment
+        cookie_content = os.getenv("YOUTUBE_COOKIES")
+        if not cookie_content and os.getenv("YOUTUBE_COOKIES_BASE64"):
+            import base64
+            try:
+                cookie_content = base64.b64decode(os.getenv("YOUTUBE_COOKIES_BASE64")).decode("utf-8")
+            except Exception as b64_err:
+                logging.error(f"[Cookies] Failed to decode YOUTUBE_COOKIES_BASE64: {b64_err}")
+
+        if cookie_content and ("youtube.com" in cookie_content or "google.com" in cookie_content or "TRUE" in cookie_content):
+            target_path = TEMP_AUDIO_DIR / "youtube_cookies.txt"
+            target_path.write_text(cookie_content.strip() + "\n", encoding="utf-8")
+            try:
+                os.chmod(target_path, 0o600)
+            except Exception:
+                pass
+            YOUTUBE_COOKIE_PATH = target_path
+            logging.info(f"[Cookies] Successfully loaded YouTube session cookies from environment ({len(cookie_content)} bytes)")
+            return YOUTUBE_COOKIE_PATH
+
+        # 2. Check explicit cookie file paths
+        candidate_paths = [
+            os.getenv("YOUTUBE_COOKIE_FILE"),
+            os.getenv("COOKIE_FILE"),
+            str(BASE_DIR / "cookies.txt"),
+            str(ROOT_DIR / "cookies.txt"),
+            str(BASE_DIR / "youtube_cookies.txt"),
+        ]
+        for p in candidate_paths:
+            if p and Path(p).is_file():
+                YOUTUBE_COOKIE_PATH = Path(p)
+                logging.info(f"[Cookies] Found YouTube cookie file at: {p}")
+                return YOUTUBE_COOKIE_PATH
+    except Exception as e:
+        logging.error(f"[Cookies] Cookie initialization notice: {e}")
+
+    return None
+
+# Initialize cookies on module load
+init_youtube_cookies()
+
+def get_base_ydl_opts(client_list: list[str] | None = None):
+    """Universal yt-dlp config with resilient player clients and secure cookie support"""
     opts = {
         "quiet": True,
         "no_warnings": True,
-        "extractor_args": {
+    }
+
+    # Pass secure cookiefile if available
+    cookie_file = YOUTUBE_COOKIE_PATH or init_youtube_cookies()
+    if cookie_file and cookie_file.is_file():
+        opts["cookiefile"] = str(cookie_file)
+
+    # Proper headers mimicking modern client browser
+    opts["http_headers"] = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Mode": "navigate",
+    }
+
+    if client_list is not None:
+        opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["android", "ios", "mweb"]
+                "player_client": client_list
             }
         }
-    }
+    else:
+        # Default player clients: ['android', 'ios', 'web'] to eliminate 403 blocks
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["android", "ios", "web"]
+            }
+        }
+
     ffmpeg_dir = get_ffmpeg_dir()
     if ffmpeg_dir:
         opts["ffmpeg_location"] = ffmpeg_dir
@@ -789,6 +868,7 @@ def build_uniform_item(vid_id: str, raw_title: str, channel: str, thumbnail: str
         "thumbnail": best_thumb,
         "duration": dur_seconds,
         "stream_url": stream_url,
+        "audioUrl": stream_url,
         # Backward compatibility properties
         "channelTitle": channel or artist,
         "uploader": channel or artist,
@@ -1593,38 +1673,63 @@ def extract_metadata_endpoint():
             video_url = build_watch_url(raw_input)
             base_url = get_base_url()
 
-            ydl_opts = get_base_ydl_opts()
-            ydl_opts["skip_download"] = True
+            client_fallbacks = [
+                ["ios", "android"],
+                ["android"],
+                ["ios"],
+                ["mweb", "web_safari"],
+            ]
 
-            with extractor_semaphore:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(video_url, download=False)
-                    extracted_id = info.get("id") or vid_id
-                    raw_title = info.get("title") or "Unknown Title"
-                    channel = info.get("uploader") or info.get("channel") or "Unknown Channel"
-                    duration = info.get("duration") or 0
-                    thumbnail = info.get("thumbnail") or f"https://img.youtube.com/vi/{extracted_id}/hqdefault.jpg"
-                    view_count = info.get("view_count") or 0
-                    published_at = info.get("upload_date")
-                    desc = info.get("description") or ""
+            info = None
+            last_err = None
+            for client_list in client_fallbacks:
+                try:
+                    ydl_opts = get_base_ydl_opts(client_list=client_list)
+                    ydl_opts["skip_download"] = True
+                    with extractor_semaphore:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            info = ydl.extract_info(video_url, download=False)
+                            if info:
+                                break
+                except Exception as ex:
+                    last_err = ex
+                    msg = str(ex).lower()
+                    if "bot" in msg or "sign in" in msg or "429" in msg:
+                        logging.warning(f"[ExtractMetadata] Challenge with client {client_list}, trying fallback...")
+                        continue
+                    break
 
-                    uniform_obj = build_uniform_item(
-                        vid_id=extracted_id,
-                        raw_title=raw_title,
-                        channel=channel,
-                        thumbnail=thumbnail,
-                        duration=duration,
-                        view_count=view_count,
-                        published_at=published_at,
-                        description=desc,
-                        base_url=base_url
-                    )
-                    # Add extra direct stream reference for extractor clients
-                    uniform_obj["audioUrl"] = f"{base_url}/stream?id={extracted_id}"
+            if not info:
+                if last_err:
+                    raise last_err
+                raise Exception("Failed to extract metadata")
 
-                    # Cache extract metadata for 12 hours
-                    search_cache.set(cache_key, uniform_obj, ttl=43200)
-                    return uniform_obj
+            extracted_id = info.get("id") or vid_id
+            raw_title = info.get("title") or "Unknown Title"
+            channel = info.get("uploader") or info.get("channel") or "Unknown Channel"
+            duration = info.get("duration") or 0
+            thumbnail = info.get("thumbnail") or f"https://img.youtube.com/vi/{extracted_id}/hqdefault.jpg"
+            view_count = info.get("view_count") or 0
+            published_at = info.get("upload_date")
+            desc = info.get("description") or ""
+
+            uniform_obj = build_uniform_item(
+                vid_id=extracted_id,
+                raw_title=raw_title,
+                channel=channel,
+                thumbnail=thumbnail,
+                duration=duration,
+                view_count=view_count,
+                published_at=published_at,
+                description=desc,
+                base_url=base_url
+            )
+            # Add extra direct stream reference for extractor clients
+            uniform_obj["audioUrl"] = f"{base_url}/stream?id={extracted_id}"
+
+            # Cache extract metadata for 12 hours
+            search_cache.set(cache_key, uniform_obj, ttl=43200)
+            return uniform_obj
 
         result = single_flight.execute(f"flight:{cache_key}", _do_extract)
         return jsonify(result)
@@ -1651,127 +1756,197 @@ def stream_audio():
         video_url = build_watch_url(raw_input)
         force_refresh = request.args.get("refresh") == "1" or request.args.get("force") == "1"
 
-        # 1. Check stream URL cache (TTL 3 hours = 10800s) - purely in memory/Supabase, no local disk storage
+        if request.method == "POST":
+            base_url = get_base_url()
+            stream_path = f"{base_url}/stream?id={vid_id}" if base_url else f"/stream?id={vid_id}"
+            return jsonify({
+                "id": vid_id,
+                "audioUrl": stream_path,
+                "stream_url": stream_path,
+            })
+
         cache_key = f"stream:{vid_id}"
+        audio_url = None
+
         if not force_refresh:
             cached_stream = search_cache.get(cache_key)
             if cached_stream:
                 request_budget.record_request("stream", hit=True)
                 audio_url = cached_stream.get("audioUrl") if isinstance(cached_stream, dict) else cached_stream
-                if request.method == "POST":
-                    return jsonify(cached_stream if isinstance(cached_stream, dict) else {"audioUrl": audio_url, "stream_url": audio_url})
-                response = redirect(audio_url, code=302)
-                response.headers["Access-Control-Allow-Origin"] = "*"
-                response.headers["Cache-Control"] = "public, max-age=7200"
-                return response
 
-        # 2. Extract direct audio stream with single-flight and bounded concurrency
+        # 2. Extract direct audio stream with mobile player clients (ios, android)
         def _extract_stream():
             request_budget.record_request("stream", hit=False, upstream=True)
-            ydl_opts = get_base_ydl_opts()
-            ydl_opts.update({
-                "format": "bestaudio/best",
-                "skip_download": True,
-            })
 
-            with extractor_semaphore:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(video_url, download=False)
-                    audio_url = info.get("url")
+            client_fallbacks = [
+                ["android", "ios", "web"],
+                ["ios", "android"],
+                ["android"],
+                ["ios"],
+            ]
 
-                    if not audio_url and "formats" in info:
-                        audio_formats = [f for f in info["formats"] if f.get("acodec") != "none" and f.get("vcodec") == "none"]
-                        if not audio_formats:
-                            audio_formats = [f for f in info["formats"] if f.get("acodec") != "none"]
-                        if audio_formats:
-                            audio_formats.sort(key=lambda f: f.get("abr") or 0, reverse=True)
-                            audio_url = audio_formats[0].get("url")
+            format_fallbacks = [
+                "bestaudio/best",
+                "bestaudio[ext=m4a]/bestaudio/best",
+                "best",
+            ]
 
-                    if audio_url:
-                        base_url = get_base_url()
-                        stream_data = {
-                            "audioUrl": audio_url,
-                            "stream_url": audio_url,
-                            "title": info.get("title", ""),
-                            "uploader": info.get("uploader", ""),
-                            "duration": info.get("duration", 0),
-                            "thumbnail": info.get("thumbnail", ""),
-                            "id": vid_id,
-                        }
-                        search_cache.set(cache_key, stream_data, ttl=10800)
-                        return stream_data
+            last_err = None
+            for client_list in client_fallbacks:
+                for fmt in format_fallbacks:
+                    try:
+                        ydl_opts = get_base_ydl_opts(client_list=client_list)
+                        ydl_opts.update({
+                            "format": fmt,
+                            "skip_download": True,
+                        })
 
+                        with extractor_semaphore:
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                info = ydl.extract_info(video_url, download=False)
+                                extracted_url = info.get("url")
+
+                                if not extracted_url and "formats" in info:
+                                    audio_formats = [
+                                        f for f in info["formats"]
+                                        if f.get("url") and (
+                                            f.get("acodec") != "none"
+                                            or "audio" in (f.get("format_note") or "").lower()
+                                            or f.get("resolution") == "audio only"
+                                        )
+                                    ]
+                                    if not audio_formats:
+                                        audio_formats = [f for f in info["formats"] if f.get("url")]
+                                    if audio_formats:
+                                        audio_formats.sort(
+                                            key=lambda f: (f.get("abr") or f.get("tbr") or 0),
+                                            reverse=True,
+                                        )
+                                        extracted_url = audio_formats[0].get("url")
+
+                                if extracted_url:
+                                    base_url = get_base_url()
+                                    stream_data = {
+                                        "audioUrl": extracted_url,
+                                        "stream_url": extracted_url,
+                                        "title": info.get("title", ""),
+                                        "uploader": info.get("uploader", ""),
+                                        "duration": info.get("duration", 0),
+                                        "thumbnail": info.get("thumbnail", ""),
+                                        "id": vid_id,
+                                    }
+                                    search_cache.set(cache_key, stream_data, ttl=10800)
+                                    return stream_data
+                    except Exception as ex:
+                        last_err = ex
+                        msg = str(ex).lower()
+                        if "bot" in msg or "sign in" in msg or "429" in msg or "login" in msg:
+                            logging.warning(f"[StreamExtraction] Challenge with client {client_list}, trying next client...")
+                            break
+                        continue
+
+            if last_err:
+                raise last_err
             return None
 
-        stream_info = single_flight.execute(f"flight:{cache_key}", _extract_stream)
-        if stream_info and stream_info.get("audioUrl"):
-            if request.method == "POST":
-                base_url = get_base_url()
-                uniform_meta = build_uniform_item(
-                    vid_id=vid_id,
-                    raw_title=stream_info.get("title", ""),
-                    channel=stream_info.get("uploader", ""),
-                    thumbnail=stream_info.get("thumbnail", ""),
-                    duration=stream_info.get("duration", 0),
-                    base_url=base_url
-                )
-                uniform_meta["audioUrl"] = stream_info["audioUrl"]
-                uniform_meta["stream_url"] = stream_info["audioUrl"]
-                return jsonify(uniform_meta)
+        if not audio_url:
+            stream_info = single_flight.execute(f"flight:{cache_key}", _extract_stream)
+            if stream_info and stream_info.get("audioUrl"):
+                audio_url = stream_info["audioUrl"]
 
-            audio_url = stream_info["audioUrl"]
-            upstream_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            }
-            if "Range" in request.headers:
-                upstream_headers["Range"] = request.headers["Range"]
+        if not audio_url:
+            return jsonify({"error": "Failed to resolve stream URL."}), 404
 
+        # 3. Server-side Stream Proxying (Never 302 redirect directly to googlevideo.com)
+        # YouTube CDN rejects open-ended ranges (e.g. bytes=0-) or un-ranged requests with 403 Forbidden.
+        # Clamp to bounded 1MB chunks to ensure consistent HTTP 206 Partial Content responses.
+        range_header = request.headers.get("Range")
+        chunk_size = 1048576  # 1 MB chunk
+        if range_header:
+            match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+            if match:
+                start = int(match.group(1)) if match.group(1) else 0
+                client_end = int(match.group(2)) if match.group(2) else None
+                end = min(client_end, start + chunk_size - 1) if client_end is not None else start + chunk_size - 1
+                upstream_range = f"bytes={start}-{end}"
+            else:
+                upstream_range = f"bytes=0-{chunk_size - 1}"
+        else:
+            upstream_range = f"bytes=0-{chunk_size - 1}"
+
+        upstream_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "identity;q=1, *;q=0",
+            "Range": upstream_range,
+        }
+
+        upstream_res = None
+        try:
+            upstream_res = requests.get(audio_url, headers=upstream_headers, stream=True, timeout=15)
+        except Exception as fetch_err:
+            logging.warning(f"[StreamProxy] Initial fetch failed for {vid_id}: {fetch_err}")
+
+        # Invalidate cache and retry extraction if upstream returns 403 Forbidden or fails
+        if upstream_res is None or upstream_res.status_code == 403:
+            logging.warning(f"[StreamProxy] Upstream 403 Forbidden for {vid_id}, refreshing extraction...")
+            search_cache.delete(cache_key)
             try:
-                upstream_res = requests.get(audio_url, headers=upstream_headers, stream=True, timeout=15)
+                refreshed_info = _extract_stream()
+                if refreshed_info and refreshed_info.get("audioUrl"):
+                    audio_url = refreshed_info["audioUrl"]
+                    upstream_res = requests.get(audio_url, headers=upstream_headers, stream=True, timeout=15)
+            except Exception as retry_err:
+                logging.error(f"[StreamProxy] Retry extraction failed for {vid_id}: {retry_err}")
 
-                if request.method == "HEAD":
-                    head_resp = Response("", status=upstream_res.status_code)
-                    head_resp.headers["Content-Type"] = upstream_res.headers.get("Content-Type", "audio/webm")
-                    head_resp.headers["Access-Control-Allow-Origin"] = "*"
-                    head_resp.headers["Accept-Ranges"] = "bytes"
-                    if "Content-Length" in upstream_res.headers:
-                        head_resp.headers["Content-Length"] = upstream_res.headers["Content-Length"]
-                    return head_resp
+        if upstream_res is None or not upstream_res.ok:
+            status_code = upstream_res.status_code if upstream_res is not None else 502
+            return jsonify({"error": "Failed to stream audio from upstream source", "status": status_code}), status_code
 
-                def generate_audio_chunks():
-                    try:
-                        for chunk in upstream_res.iter_content(chunk_size=65536):
-                            yield chunk
-                    except GeneratorExit:
-                        upstream_res.close()
-                    except Exception:
-                        upstream_res.close()
+        content_type = upstream_res.headers.get("Content-Type") or "audio/mp4"
 
-                response_headers = {
-                    "Content-Type": upstream_res.headers.get("Content-Type", "audio/webm"),
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Headers": "Range, Content-Type, Accept",
-                    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "public, max-age=10800",
-                }
-                if "Content-Range" in upstream_res.headers:
-                    response_headers["Content-Range"] = upstream_res.headers["Content-Range"]
-                if "Content-Length" in upstream_res.headers:
-                    response_headers["Content-Length"] = upstream_res.headers["Content-Length"]
+        if request.method == "HEAD":
+            head_resp = Response("", status=upstream_res.status_code)
+            head_resp.headers["Content-Type"] = content_type
+            head_resp.headers["Access-Control-Allow-Origin"] = "*"
+            head_resp.headers["Access-Control-Allow-Headers"] = "Range, Content-Type, Accept, User-Agent"
+            head_resp.headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+            head_resp.headers["Accept-Ranges"] = "bytes"
+            if "Content-Length" in upstream_res.headers:
+                head_resp.headers["Content-Length"] = upstream_res.headers["Content-Length"]
+            if "Content-Range" in upstream_res.headers:
+                head_resp.headers["Content-Range"] = upstream_res.headers["Content-Range"]
+            return head_resp
 
-                return Response(
-                    generate_audio_chunks(),
-                    status=upstream_res.status_code,
-                    headers=response_headers,
-                )
-            except Exception as stream_err:
-                logging.error(f"[StreamProxy] Proxy streaming error: {stream_err}")
-                response = redirect(audio_url, code=302)
-                response.headers["Access-Control-Allow-Origin"] = "*"
-                return response
+        def generate_audio_chunks():
+            try:
+                for chunk in upstream_res.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            except GeneratorExit:
+                upstream_res.close()
+            except Exception as pipe_err:
+                logging.debug(f"[StreamProxy] Client disconnected during chunk streaming: {pipe_err}")
+                upstream_res.close()
 
-        return jsonify({"error": "Failed to resolve stream URL."}), 404
+        response_headers = {
+            "Content-Type": content_type,
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Range, Content-Type, Accept, User-Agent",
+            "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=10800",
+        }
+        if "Content-Range" in upstream_res.headers:
+            response_headers["Content-Range"] = upstream_res.headers["Content-Range"]
+        if "Content-Length" in upstream_res.headers:
+            response_headers["Content-Length"] = upstream_res.headers["Content-Length"]
+
+        return Response(
+            stream_with_context(generate_audio_chunks()),
+            status=upstream_res.status_code,
+            headers=response_headers,
+        )
 
     except Exception as e:
         logging.error(f"Stream error: {str(e)}")
@@ -2435,6 +2610,7 @@ def health_check():
         "cache": search_cache.stats(),
         "budget": request_budget.stats(),
         "lyrics_service": YOUTUBE_TRANSCRIPT_AVAILABLE,
+        "cookies_loaded": bool(YOUTUBE_COOKIE_PATH and YOUTUBE_COOKIE_PATH.is_file()),
     })
 
 # ---------------------------------------------------------------------------

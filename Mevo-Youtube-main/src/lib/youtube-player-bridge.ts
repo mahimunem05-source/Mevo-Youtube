@@ -88,8 +88,8 @@ class YouTubePlayerBridge {
 
     try {
       this.player = new window.YT.Player(this.containerId, {
-        height: "1",
-        width: "1",
+        height: "200",
+        width: "200",
         playerVars: {
           autoplay: 0,
           controls: 0,
@@ -100,7 +100,7 @@ class YouTubePlayerBridge {
           modestbranding: 1,
           iv_load_policy: 3,
           enablejsapi: 1,
-          origin: window.location.origin,
+          origin: typeof window !== "undefined" ? window.location.origin : undefined,
         },
         events: {
           onReady: () => {

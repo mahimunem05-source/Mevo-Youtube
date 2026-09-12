@@ -16,6 +16,12 @@ export default defineConfig({
   ],
   server: {
     host: true,
+    proxy: {
+      "/api/extract": {
+        target: "https://mevo-extractor.onrender.com",
+        changeOrigin: true,
+      },
+    },
   },
   resolve: {
     dedupe: ["react", "react-dom"],

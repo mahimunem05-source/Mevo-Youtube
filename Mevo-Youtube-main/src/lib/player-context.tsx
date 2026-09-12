@@ -361,6 +361,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // 1. Single Dedicated HTMLAudioElement Reference
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const consecutiveSkipCountRef = useRef(0);
+  const skipTimerRef = useRef<NodeJS.Timeout | number | null>(null);
 
   const [catalogue, setCatalogue] = useState<Song[]>([...staticSongs]);
   const [session, setSession] = useState<PlaybackSession>(EMPTY_SESSION);
@@ -567,27 +569,206 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     youtubePlayerBridge.setVolume(volume, muted);
   }, [volume, muted]);
 
+  // Temporary Audio Diagnostics Listener
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (typeof window !== "undefined") {
+      (window as any).__AUDIO_DIAGNOSTICS__ = (window as any).__AUDIO_DIAGNOSTICS__ || [];
+      (window as any).__GET_AUDIO_STATUS__ = () => {
+        const el = audioRef.current;
+        return {
+          src: el?.src ?? null,
+          currentSrc: el?.currentSrc ?? null,
+          readyState: el?.readyState ?? null,
+          networkState: el?.networkState ?? null,
+          errorCode: el?.error?.code ?? null,
+          errorMessage: el?.error?.message ?? null,
+          paused: el?.paused ?? null,
+          currentTime: el?.currentTime ?? null,
+          duration: el?.duration ?? null,
+          recentEvents: (window as any).__AUDIO_DIAGNOSTICS__ || [],
+          currentSong: currentRef.current,
+        };
+      };
+    }
+
+    const events = [
+      "loadstart",
+      "loadedmetadata",
+      "loadeddata",
+      "canplay",
+      "canplaythrough",
+      "play",
+      "playing",
+      "waiting",
+      "stalled",
+      "suspend",
+      "pause",
+      "ended",
+      "error",
+    ];
+
+    const handlers: { [key: string]: EventListener } = {};
+
+    events.forEach((eventName) => {
+      const handler: EventListener = () => {
+        const payload = {
+          time: new Date().toISOString(),
+          event: eventName,
+          src: audio.src,
+          currentSrc: audio.currentSrc,
+          readyState: audio.readyState,
+          networkState: audio.networkState,
+          paused: audio.paused,
+          currentTime: audio.currentTime,
+          duration: audio.duration,
+          error: audio.error ? { code: audio.error.code, message: audio.error.message } : null,
+          activeSong: currentRef.current?.title || null,
+        };
+        console.log(`[AUDIO EVENT: ${eventName}]`, payload);
+        if (typeof window !== "undefined" && (window as any).__AUDIO_DIAGNOSTICS__) {
+          (window as any).__AUDIO_DIAGNOSTICS__.push(payload);
+          if ((window as any).__AUDIO_DIAGNOSTICS__.length > 50) {
+            (window as any).__AUDIO_DIAGNOSTICS__.shift();
+          }
+        }
+      };
+      handlers[eventName] = handler;
+      audio.addEventListener(eventName, handler);
+    });
+
+    return () => {
+      events.forEach((eventName) => {
+        if (handlers[eventName]) {
+          audio.removeEventListener(eventName, handlers[eventName]);
+        }
+      });
+    };
+  }, []);
+
   // Safe playback trigger
   const executePlay = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio) return;
+
+    const currentSrc = audio.currentSrc || audio.src || audio.getAttribute("src") || "";
+    if (
+      !currentSrc ||
+      currentSrc === "about:blank" ||
+      currentSrc === window.location.href ||
+      currentSrc.endsWith("/stream?id=") ||
+      currentSrc.endsWith("/stream?id=undefined") ||
+      currentSrc.endsWith("/stream?id=null")
+    ) {
+      console.warn("[Mevo Audio] Skipping executePlay: audio has no valid source configured.", currentSrc);
+      return;
+    }
 
     // Explicitly verify audio volume & mute state prior to play
     audio.muted = muted;
     audio.volume = muted ? 0 : Math.max(0, Math.min(1, volume));
 
     try {
+      console.log("[AUDIO DIAGNOSTIC] audio.play() requested. Current state:", {
+        src: audio.src,
+        currentSrc: audio.currentSrc,
+        readyState: audio.readyState,
+        networkState: audio.networkState,
+        paused: audio.paused,
+      });
       await audio.play();
+      console.log("[AUDIO DIAGNOSTIC] audio.play() resolved successfully!");
     } catch (error: unknown) {
-      const err = error as { name?: string; message?: string };
+      const err = error as { name?: string; message?: string; code?: number };
+      console.error("[AUDIO DIAGNOSTIC] audio.play() REJECTED:", {
+        name: err.name,
+        message: err.message,
+        code: err.code,
+        error: err,
+        src: audio.src,
+        currentSrc: audio.currentSrc,
+        readyState: audio.readyState,
+        networkState: audio.networkState,
+        audioErrorCode: audio.error?.code,
+        audioErrorMessage: audio.error?.message,
+      });
       if (err.name === "AbortError") {
         // Normal when user skips quickly between tracks; safely ignore
         return;
       }
+      if (err.name === "NotAllowedError") {
+        console.warn("[Mahi Music Audio] Mobile user gesture required for playback. Holding track without auto-skip.");
+        setPlaying(false);
+        setIsBuffering(false);
+        return;
+      }
+      if (err.name === "NotSupportedError") {
+        console.warn("[Mevo Audio] Audio element has no supported sources or source empty. Holding state.");
+        setPlaying(false);
+        setIsBuffering(false);
+        return;
+      }
       console.warn("[Mahi Music Audio] Playback execution notice:", error);
       setPlaying(false);
+      setIsBuffering(false);
     }
   }, [muted, volume]);
+
+  // Synchronously load and initiate playback on HTMLAudioElement within gesture stack
+  const startAudioPlayback = useCallback(
+    (song: Song | null | undefined) => {
+      const audio = audioRef.current;
+      if (!audio || !song) return;
+
+      let audioSrc = song.audio;
+      if (!audioSrc || (!audioSrc.startsWith("http") && !audioSrc.startsWith("/"))) {
+        const vid = extractYouTubeVideoId(song.id);
+        if (vid) {
+          audioSrc = getYouTubeStreamUrl(vid);
+        }
+      }
+
+      if (
+        !audioSrc ||
+        audioSrc.trim() === "" ||
+        audioSrc === "about:blank" ||
+        audioSrc.endsWith("/stream?id=") ||
+        audioSrc.endsWith("/stream?id=undefined") ||
+        audioSrc.endsWith("/stream?id=null")
+      ) {
+        console.warn("[Mevo Audio] Skipping startAudioPlayback: song has no valid audio stream URL.", song.id);
+        return;
+      }
+
+      audio.dataset.songId = song.id;
+      if (audio.src !== audioSrc && !audio.src.endsWith(audioSrc)) {
+        audio.src = audioSrc;
+      }
+      audio.currentTime = 0;
+      audio.load();
+      audio.muted = muted;
+      audio.volume = muted ? 0 : Math.max(0, Math.min(1, volume));
+      const p = audio.play();
+      if (p !== undefined) {
+        p.catch((err: any) => {
+          if (err?.name === "NotAllowedError") {
+            console.warn("[Mevo Audio] User gesture required for mobile playback. Holding track state.");
+            setPlaying(false);
+            setIsBuffering(false);
+          } else if (err?.name === "NotSupportedError") {
+            console.warn("[Mevo Audio] Audio format not supported or source empty. Holding state.");
+            setPlaying(false);
+            setIsBuffering(false);
+          } else if (err?.name !== "AbortError") {
+            console.warn("[Mevo Audio] Direct play notice:", err);
+          }
+        });
+      }
+    },
+    [muted, volume],
+  );
 
   const activateSong = useCallback(
     (
@@ -767,6 +948,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const isMahi = isMahiSelectContext(source, playbackSource, selectedSong);
       const resolvedPlaybackSource = isMahi ? "mahi_select" : (playbackSource ?? null);
 
+      // Reset skip circuit breaker on direct user selection
+      consecutiveSkipCountRef.current = 0;
+      if (skipTimerRef.current) {
+        clearTimeout(skipTimerRef.current);
+        skipTimerRef.current = null;
+      }
+
+      // Synchronously initiate audio within the user touch/click gesture stack for ALL tracks
+      startAudioPlayback(selectedSong);
+
       setSession({
         originalQueue: [...songsList],
         queue: [...songsList],
@@ -784,7 +975,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         reason: "play",
       });
     },
-    [activateSong, current],
+    [activateSong, current, startAudioPlayback],
   );
 
   const playNewQueue = useCallback(
@@ -844,6 +1035,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         if (index < 0 || index >= previous.queue.length) return previous;
         const song = previous.queue[index];
         if (!song) return previous;
+        startAudioPlayback(song);
         const previousSong = previous.queue[previous.currentIndex];
         activateSong(song, previousSong, previous.playbackSource, { isIntraQueueNavigation: true });
         return {
@@ -855,7 +1047,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         };
       });
     },
-    [activateSong],
+    [activateSong, startAudioPlayback],
   );
 
   const playQueueIndex = playFromCurrentQueue;
@@ -1100,6 +1292,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               if (!previousSong) {
                 return { ...previous, history: previous.history.slice(0, -1) };
               }
+              startAudioPlayback(previousSong);
               activateSong(previousSong, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
               playbackEvents.emit("PREVIOUS", { song: previousSong });
               const restoredIndex = previous.queue.findIndex((song) => song.id === previousSong.id);
@@ -1127,6 +1320,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               ? new Set([nextSong.id])
               : new Set(shufflePlayedIdsRef.current).add(nextSong.id);
 
+            startAudioPlayback(nextSong);
             activateSong(nextSong, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
             playbackEvents.emit("NEXT", { song: nextSong, auto });
             const nextIndex = previous.queue.findIndex((song) => song.id === nextSong.id);
@@ -1141,7 +1335,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           const nextIndex =
             (previous.currentIndex + direction + previous.queue.length) % previous.queue.length;
           const song = previous.queue[nextIndex];
-          if (song) activateSong(song, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
+          if (song) {
+            startAudioPlayback(song);
+            activateSong(song, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
+          }
           playbackEvents.emit(direction === 1 ? "NEXT" : "PREVIOUS", { song, auto });
 
           return {
@@ -1165,6 +1362,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             if (!previousSong) {
               return { ...previous, history: previous.history.slice(0, -1) };
             }
+            startAudioPlayback(previousSong);
             activateSong(previousSong, currentSong, undefined, { isIntraQueueNavigation: true });
             playbackEvents.emit("PREVIOUS", { song: previousSong });
             const restoredIndex = previous.queue.findIndex((song) => song.id === previousSong.id);
@@ -1192,6 +1390,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             ? new Set([nextSong.id])
             : new Set(shufflePlayedIdsRef.current).add(nextSong.id);
 
+          startAudioPlayback(nextSong);
           activateSong(nextSong, currentSong, undefined, { isIntraQueueNavigation: true });
           playbackEvents.emit("NEXT", { song: nextSong, auto });
           const nextIndex = previous.queue.findIndex((song) => song.id === nextSong.id);
@@ -1240,6 +1439,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                   const nextSong = fresh[0];
                   const nextIndex = curr.currentIndex + 1;
 
+                  startAudioPlayback(nextSong);
                   activateSong(nextSong, curr.queue[curr.currentIndex], undefined, { isIntraQueueNavigation: true });
                   playbackEvents.emit("NEXT", { song: nextSong, auto: true });
                   playbackEvents.emit("QUEUE_CHANGE", {
@@ -1279,7 +1479,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           (previous.currentIndex + direction + previous.queue.length) % previous.queue.length;
         const song = previous.queue[nextIndex];
         const previousSong = previous.queue[previous.currentIndex];
-        if (song) activateSong(song, previousSong, undefined, { isIntraQueueNavigation: true });
+        if (song) {
+          startAudioPlayback(song);
+          activateSong(song, previousSong, undefined, { isIntraQueueNavigation: true });
+        }
         playbackEvents.emit(direction === 1 ? "NEXT" : "PREVIOUS", { song, auto });
 
         // Continuous Queue Replenishment: If <= 3 tracks remain, fetch next radio batch
@@ -1333,111 +1536,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         };
       });
     },
-    [activateSong, catalogue, repeat, autoplayEnabled, shuffle],
+    [activateSong, catalogue, repeat, autoplayEnabled, shuffle, startAudioPlayback],
   );
 
   const next = useCallback(() => step(1, false), [step]);
   const previous = useCallback(() => step(-1, false), [step]);
 
-  // YouTube IFrame Player integration & event listeners
+  // YouTube IFrame Bridge preserved in idle state; audio playback is unified directly on HTMLAudioElement
   useEffect(() => {
-    youtubePlayerBridge.init("mevo-youtube-iframe-container");
-
-    const unsubscribeState = youtubePlayerBridge.onStateChange((state) => {
-      const activeSong = currentRef.current;
-      if (!activeSong || !isYouTubeSong(activeSong)) return;
-
-      if (state === "playing") {
-        setPlaying(true);
-        setIsBuffering(false);
-        const ytDuration = youtubePlayerBridge.getDuration();
-        if (ytDuration > 0) {
-          setDuration(ytDuration);
-        }
-      } else if (state === "paused") {
-        setPlaying(false);
-        setIsBuffering(false);
-      } else if (state === "buffering") {
-        setIsBuffering(true);
-        playbackEvents.emit("BUFFERING", { buffering: true });
-      } else if (state === "ended") {
-        setIsBuffering(false);
-        recordTrackCompleted(activeSong);
-
-        const shouldLogActivity = settings.showListeningActivity && !settings.privateSession;
-        if (shouldLogActivity) {
-          void recordPlay(activeSong.id, duration || activeSong.duration, true);
-          recordSongPlayedTimestamp(activeSong.id);
-        }
-
-        if (repeatRef.current === "one") {
-          youtubePlayerBridge.seek(0);
-          setProgress(0);
-          youtubePlayerBridge.play();
-          return;
-        }
-
-        step(1, true);
-      }
-    });
-
-    const unsubscribeError = youtubePlayerBridge.onError((error) => {
-      const failedSong = currentRef.current;
-      if (!failedSong || !isYouTubeSong(failedSong)) return;
-      setIsBuffering(false);
-      const errorCode = typeof error === "number" ? error : (error?.data ?? error);
-      console.warn("[YouTube Player] Playback error code:", errorCode, "for:", failedSong.title);
-      // YouTube IFrame API fatal error codes:
-      // 2   = invalid video ID
-      // 5   = HTML5 player cannot play the requested video
-      // 100 = video not found or has been removed
-      // 101 = video owner has disallowed embedding
-      // 150 = same as 101 (different encoding)
-      const FATAL_YT_ERRORS = [2, 5, 100, 101, 150];
-      if (FATAL_YT_ERRORS.includes(errorCode)) {
-        setPlaybackError(`"${failedSong.title}" cannot be played (YouTube error ${errorCode}). Skipping...`);
-        setTimeout(() => step(1, true), 1200);
-      }
-    });
-
     return () => {
-      unsubscribeState();
-      unsubscribeError();
+      if (skipTimerRef.current) {
+        clearTimeout(skipTimerRef.current);
+        skipTimerRef.current = null;
+      }
     };
-  }, [step, settings.showListeningActivity, settings.privateSession, duration]);
-
-  // YouTube playback progress polling (~4x/sec)
-  useEffect(() => {
-    if (!current || !isYouTubeSong(current) || !isPlaying) return;
-
-    const interval = setInterval(() => {
-      const currentTime = youtubePlayerBridge.getCurrentTime();
-      const currentDuration = youtubePlayerBridge.getDuration();
-
-      if (currentDuration > 0) {
-        setDuration(currentDuration);
-      }
-
-      if (currentTime > 0 || isPlaying) {
-        setProgress(currentTime);
-        trackListenedSecondsRef.current = currentTime;
-
-        const now = performance.now();
-        if (now - lastTimeEventRef.current > 500) {
-          lastTimeEventRef.current = now;
-          playbackEvents.emit("TIME_UPDATE", {
-            currentTime,
-            duration: currentDuration || duration || current.duration || 0,
-          });
-          if (current) {
-            recordTrackProgress(current, currentTime, currentDuration || duration || current.duration || 0);
-          }
-        }
-      }
-    }, 250);
-
-    return () => clearInterval(interval);
-  }, [current, isPlaying, duration]);
+  }, []);
 
   const toggle = useCallback(() => {
     if (!current) {
@@ -1447,11 +1560,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     setPlaying((value) => {
       const nextState = !value;
-      if (isYouTubeSong(current)) {
+      const audio = audioRef.current;
+      if (audio) {
         if (nextState) {
-          youtubePlayerBridge.play();
+          audio.muted = muted;
+          audio.volume = muted ? 0 : Math.max(0, Math.min(1, volume));
+          const p = audio.play();
+          if (p !== undefined) {
+            p.catch((err) => console.warn("[Audio toggle play notice]:", err));
+          }
         } else {
-          youtubePlayerBridge.pause();
+          audio.pause();
         }
       }
       playbackEvents.emit(
@@ -1460,7 +1579,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       );
       return nextState;
     });
-  }, [catalogue, current, play]);
+  }, [catalogue, current, play, muted, volume]);
 
   const toggleShuffle = useCallback(() => {
     setShuffle((enabled) => {
@@ -1472,6 +1591,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Synchronize Audio Track Source & Playback State
+  // Synchronize Audio Track Source & Playback State for all tracks via HTMLAudioElement
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -1481,74 +1601,33 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeAttribute("src");
       delete audio.dataset.songId;
       audio.load();
-      youtubePlayerBridge.stop();
       setProgress(0);
       return;
     }
 
-    // YouTube playback path: handled via YouTubePlayerBridge to bypass 403 & bot blocks
-    if (isYouTubeSong(current)) {
-      audio.pause();
-      audio.removeAttribute("src");
-      delete audio.dataset.songId;
-
-      const cleanId = extractYouTubeVideoId(current.id);
-      if (current.duration && current.duration > 0) {
-        setDuration(current.duration);
-      }
-
-      const activeYtId = youtubePlayerBridge.getCurrentVideoId();
-      if (activeYtId !== cleanId) {
-        setProgress(0);
-        youtubePlayerBridge.loadVideo(cleanId, isPlaying);
-      } else {
-        if (isPlaying) {
-          youtubePlayerBridge.play();
-        } else {
-          youtubePlayerBridge.pause();
-        }
-      }
-
-      // MediaSession API Sync for lock-screen & mobile media controls
-      if (typeof window !== "undefined" && "mediaSession" in navigator) {
-        try {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: current.title,
-            artist: current.artist,
-            album: current.album || "MEVO",
-            artwork: [
-              { src: current.cover, sizes: "96x96", type: "image/jpeg" },
-              { src: current.cover, sizes: "128x128", type: "image/jpeg" },
-              { src: current.cover, sizes: "192x192", type: "image/jpeg" },
-              { src: current.cover, sizes: "256x256", type: "image/jpeg" },
-              { src: current.cover, sizes: "384x384", type: "image/jpeg" },
-              { src: current.cover, sizes: "512x512", type: "image/jpeg" },
-            ],
-          });
-          navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
-        } catch {
-          // Ignore unsupported MediaSession attributes
-        }
-      }
-      return;
-    }
-
-    // Non-YouTube path (Local / Supabase / B2 upload)
-    youtubePlayerBridge.pause();
-
     let audioSrc = current.audio;
-    if (!audioSrc || !audioSrc.startsWith("http")) {
-      audioSrc = getYouTubeStreamUrl(current.id);
+    if (!audioSrc || (!audioSrc.startsWith("http") && !audioSrc.startsWith("/"))) {
+      const vid = extractYouTubeVideoId(current.id);
+      if (vid) {
+        audioSrc = getYouTubeStreamUrl(vid);
+      }
     }
 
-    if (!audioSrc) {
+    if (
+      !audioSrc ||
+      audioSrc.trim() === "" ||
+      audioSrc === "about:blank" ||
+      audioSrc.endsWith("/stream?id=") ||
+      audioSrc.endsWith("/stream?id=undefined") ||
+      audioSrc.endsWith("/stream?id=null")
+    ) {
       audio.pause();
       setPlaying(false);
       setPlaybackError(`No audio source available for "${current.title}".`);
       return;
     }
 
-    const isNewTrack = audio.dataset.songId !== current.id || audio.src !== audioSrc;
+    const isNewTrack = audio.dataset.songId !== current.id;
     if (isNewTrack) {
       audio.dataset.songId = current.id;
       audio.pause();
@@ -1558,8 +1637,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.load();
     }
 
+    if (current.duration && current.duration > 0) {
+      setDuration(current.duration);
+    }
+
     if (isPlaying) {
-      void executePlay();
+      if (audio.paused && audio.src && audio.src !== "about:blank") {
+        void executePlay();
+      }
     } else {
       audio.pause();
     }
@@ -1589,14 +1674,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const seek = useCallback((seconds: number) => {
     if (!Number.isFinite(seconds)) return;
-    const activeSong = currentRef.current;
-    if (activeSong && isYouTubeSong(activeSong)) {
-      youtubePlayerBridge.seek(seconds);
-    } else {
-      const audio = audioRef.current;
-      if (audio) {
-        audio.currentTime = seconds;
-      }
+    const audio = audioRef.current;
+    if (audio) {
+      audio.currentTime = seconds;
     }
     setProgress(seconds);
     playbackEvents.emit("SEEK", { seconds });
@@ -1827,7 +1907,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         {children}
         {/* Dedicated YouTube IFrame Player bridge for official, unblocked browser playback */}
         <div
-          className="pointer-events-none fixed -top-[9999px] -left-[9999px] h-[1px] w-[1px] opacity-0 overflow-hidden"
+          className="pointer-events-none fixed bottom-0 right-0 w-[200px] h-[200px] -z-50 opacity-[0.002] overflow-hidden"
+          style={{ clipPath: "inset(100%)", pointerEvents: "none" }}
           aria-hidden="true"
         >
           <div id="mevo-youtube-iframe-container" />
@@ -1835,6 +1916,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         {/* Single Dedicated HTMLAudioElement instance rendered in React DOM tree */}
         <audio
           ref={audioRef}
+          playsInline={true}
           preload={settings.gaplessPlayback ? "auto" : "metadata"}
           onTimeUpdate={(event) => {
             const currentTime = event.currentTarget.currentTime;
@@ -1857,6 +1939,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               setDuration(dur);
             }
           }}
+          onLoadStart={() => {
+            setIsBuffering(true);
+          }}
           onPlay={() => {
             setPlaying(true);
             setIsBuffering(false);
@@ -1868,27 +1953,46 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             setIsBuffering(true);
             playbackEvents.emit("BUFFERING", { buffering: true });
           }}
+          onStalled={() => {
+            setIsBuffering(true);
+          }}
           onPlaying={() => {
+            consecutiveSkipCountRef.current = 0;
+            if (skipTimerRef.current) {
+              clearTimeout(skipTimerRef.current);
+              skipTimerRef.current = null;
+            }
             setIsBuffering(false);
+            setPlaying(true);
             playbackEvents.emit("BUFFERING", { buffering: false });
           }}
           onCanPlay={() => {
             setIsBuffering(false);
           }}
-          onError={() => {
+          onError={(event) => {
             const failedSong = current;
             setIsBuffering(false);
             setPlaying(false);
 
+            const audioEl = event.currentTarget;
+            console.warn("[AUDIO ERROR]", {
+              code: audioEl.error?.code,
+              message: audioEl.error?.message,
+              src: audioEl.src,
+              networkState: audioEl.networkState,
+              readyState: audioEl.readyState,
+              song: failedSong?.title,
+            });
+
             const message = failedSong?.title
-              ? `Couldn't play "${failedSong.title}". Please check audio source or try another track.`
+              ? `Couldn't play "${failedSong.title}". Tap to retry or select another track.`
               : "Audio source is currently unavailable.";
 
             setPlaybackError(message);
             playbackEvents.emit("ERROR", {
               message,
               songId: failedSong?.id ?? null,
-              recoverable: false,
+              recoverable: true,
             });
           }}
           onEnded={() => {
@@ -1896,6 +2000,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             const audioEl = audioRef.current;
             if (!audioEl || !endedSong || audioEl.currentTime <= 0) {
               return;
+            }
+
+            consecutiveSkipCountRef.current = 0;
+            if (skipTimerRef.current) {
+              clearTimeout(skipTimerRef.current);
+              skipTimerRef.current = null;
             }
 
             // User taste completion tracking

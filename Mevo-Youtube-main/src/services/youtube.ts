@@ -1076,7 +1076,7 @@ export function normalizeYouTubeSong(
   const officialScore = getOfficialContentScore(channelForScore, rawTitle || title);
   const isOfficial = officialScore >= 60;
   const titleLower = video.title.toLowerCase();
-  const musicType = titleLower.includes("official audio") || video.channelTitle.toLowerCase().includes("- topic")
+  const musicType = titleLower.includes("official audio") || (video.channelTitle?.toLowerCase().includes("- topic") ?? false)
     ? "official_audio"
     : titleLower.includes("official music video") || titleLower.includes("official video")
       ? "official_video"
@@ -1131,7 +1131,7 @@ export function normalizeYouTubeSong(
     trending: options.trending ?? false,
     plays: video.viewCount || 0,
     created_at: video.publishedAt || new Date().toISOString(),
-    channel: video.channelTitle,
+    channel: video.channelTitle || (video as any).channel || "YouTube Artist",
     thumbnail: bestCover,
     language,
     mood,

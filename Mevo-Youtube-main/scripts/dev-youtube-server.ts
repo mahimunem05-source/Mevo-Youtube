@@ -2,6 +2,7 @@ import type { Plugin, ViteDevServer } from "vite";
 import fs from "node:fs";
 import path from "node:path";
 import { parseLrc, alignPlainLyrics, processLyricsLines, cleanSongTitle } from "../src/services/lyricsService.ts";
+import { getDirectAudioStreamUrl } from "./youtube-solver.ts";
 
 interface CacheEntry<T> {
   data: T;
@@ -231,40 +232,118 @@ function calculateScore(item: { publishedAt?: string; viewCount?: number; durati
   return hypeScore + popularityScore + freshness;
 }
 
-async function getDirectAudioUrl(videoId: string): Promise<string | null> {
+function getDevYouTubeCookies(): string {
+  try {
+    const envPath = path.resolve(process.cwd(), ".env.local");
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, "utf-8");
+      const match = content.match(/YOUTUBE_COOKIES=["']?([^"'\r\n]+)/);
+      if (match && match[1]) return match[1];
+    }
+  } catch {
+    // ignore
+  }
+  return process.env.YOUTUBE_COOKIES || "";
+}
+
+function parseJsonBody(req: any): Promise<any> {
+  return new Promise((resolve) => {
+    let bodyStr = "";
+    req.on("data", (chunk: any) => {
+      bodyStr += chunk;
+      if (bodyStr.length > 1e6) {
+        req.destroy();
+        resolve({});
+      }
+    });
+    req.on("end", () => {
+      if (!bodyStr) return resolve({});
+      try {
+        resolve(JSON.parse(bodyStr));
+      } catch {
+        resolve({});
+      }
+    });
+    req.on("error", () => resolve({}));
+  });
+}
+
+async function getDirectAudioUrl(videoId: string, bypassCache = false): Promise<string | null> {
   const cleanId = videoId.replace(/^yt-/, "").trim();
   if (!cleanId) return null;
+
+  // 1. High-speed local decipher extraction (handles signatureCipher & n throttling directly)
   try {
-    const res = await fetch("https://www.youtube.com/youtubei/v1/player", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
-      body: JSON.stringify({
-        videoId: cleanId,
-        context: {
-          client: {
-            clientName: "ANDROID_VR",
-            clientVersion: "1.61.48",
-            deviceMake: "Oculus",
-            deviceModel: "Quest 3",
-            osName: "Android",
-            osVersion: "12",
-          },
-        },
-      }),
-    });
-    const data = await res.json();
-    const formats = data.streamingData?.adaptiveFormats || [];
-    const audioFormats = formats.filter((f: any) => f.mimeType?.includes("audio/"));
-    audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-    for (const af of audioFormats) {
-      if (af.url) return af.url;
+    const localStreamUrl = await getDirectAudioStreamUrl(cleanId, bypassCache);
+    if (localStreamUrl) {
+      return localStreamUrl;
     }
-  } catch (err) {
-    console.error("[Vite Dev YouTube] Error extracting stream for", cleanId, err);
+  } catch (solverErr) {
+    console.warn("[Vite Dev YouTube] Local solver attempt notice:", solverErr);
   }
+
+  // 2. Try querying backend extractor /stream via POST to obtain resolved audio stream URL
+  try {
+    const backendUrl = process.env.VITE_EXTRACTOR_URL || "https://mevo-extractor.onrender.com";
+    const res = await fetch(`${backendUrl}/stream?id=${encodeURIComponent(cleanId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.audioUrl) return data.audioUrl;
+      if (data.stream_url) return data.stream_url;
+    }
+  } catch {
+    // continue to fallback
+  }
+
+  // 2. Try direct extraction with optional session cookies
+  const cookies = getDevYouTubeCookies();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  };
+  if (cookies) {
+    headers["Cookie"] = cookies;
+  }
+
+  const clients = [
+    { clientName: "WEB", clientVersion: "2.20240910.01.00" },
+    { clientName: "MWEB", clientVersion: "2.20240910.01.00" },
+    {
+      clientName: "IOS",
+      clientVersion: "19.45.4",
+      deviceMake: "Apple",
+      deviceModel: "iPhone16,2",
+      osName: "iOS",
+      osVersion: "17.5.1.21F90",
+    },
+  ];
+
+  for (const client of clients) {
+    try {
+      const res = await fetch("https://www.youtube.com/youtubei/v1/player", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          videoId: cleanId,
+          context: { client },
+        }),
+      });
+      const data = await res.json();
+      const formats = (data.streamingData?.adaptiveFormats || []).concat(data.streamingData?.formats || []);
+      const audioFormats = formats.filter((f: any) => f.mimeType?.includes("audio/"));
+      audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+      for (const af of audioFormats) {
+        if (af.url) return af.url;
+      }
+    } catch {
+      // try next client
+    }
+  }
+
   return null;
 }
 
@@ -689,7 +768,7 @@ export function devYouTubePlugin(): Plugin {
                   duration: d?.duration || 0,
                   viewCount: d?.viewCount || 0,
                   publishedAt,
-                  stream_url: `https://mevo-extractor.onrender.com/stream?id=${id}`,
+                  stream_url: `/stream?id=${id}`,
                   embeddable: d?.embeddable !== false,
                   isMadeForKids: Boolean(d?.isMadeForKids),
                   description: desc,
@@ -731,13 +810,127 @@ export function devYouTubePlugin(): Plugin {
           }
         }
 
-        // 5. /stream with direct local IP extraction (zero 403 IP-lock errors)
-        if (pathname === "/stream") {
-          const rawId = urlObj.searchParams.get("id") || urlObj.searchParams.get("url") || "";
+        // 5a. /api/extract & /extract: YouTube video metadata & audio stream URL endpoint
+        if (pathname === "/api/extract" || pathname === "/extract") {
+          if (req.method === "OPTIONS") {
+            res.statusCode = 204;
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range");
+            res.end();
+            return;
+          }
+
+          let queryId =
+            urlObj.searchParams.get("id") ||
+            urlObj.searchParams.get("videoId") ||
+            urlObj.searchParams.get("url") ||
+            "";
+
+          if (!queryId && (req.method === "POST" || req.method === "PUT")) {
+            const body = await parseJsonBody(req);
+            queryId = body.id || body.videoId || body.url || "";
+          }
+
+          const rawId = queryId.trim();
+          const vidMatch = rawId.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([a-zA-Z0-9_-]{11})/);
+          const vidId = vidMatch ? vidMatch[1] : rawId.replace(/^yt-/, "").trim();
+
+          if (!vidId) {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify({ error: "Missing video ID or URL" }));
+            return;
+          }
+
+          try {
+            const detailsMap = await getVideoDetails([vidId], "discovery");
+            const details = detailsMap.get(vidId);
+
+            const streamCacheKey = `stream:${vidId}`;
+            let audioUrl = cache.get<string>(streamCacheKey);
+            if (!audioUrl) {
+              audioUrl = await getDirectAudioUrl(vidId);
+              if (audioUrl) {
+                cache.set(streamCacheKey, audioUrl, 10800);
+              }
+            }
+
+            const streamPath = `/stream?id=${encodeURIComponent(vidId)}`;
+
+            const title = details?.title || "YouTube Track";
+            const artist = details?.channelTitle || "YouTube Artist";
+            const duration = details?.duration || 0;
+            const thumbnail = details?.thumbnail || `https://img.youtube.com/vi/${vidId}/hqdefault.jpg`;
+
+            const payload = {
+              id: vidId,
+              title,
+              artist,
+              duration,
+              thumbnail,
+              stream_url: streamPath,
+              audioUrl: streamPath,
+              uploader: artist,
+              channelTitle: artist,
+              view_count: details?.viewCount || 0,
+              viewCount: details?.viewCount || 0,
+              description: details?.description || "",
+            };
+
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify(payload));
+            return;
+          } catch (extractErr: any) {
+            console.error(`[Vite Dev YouTube] /api/extract error for ${vidId}:`, extractErr.message);
+            res.statusCode = 500;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify({ error: extractErr.message || "Extraction failed" }));
+            return;
+          }
+        }
+
+        // 5b. /stream & /api/stream with direct server-side stream proxying (never 302 redirect to googlevideo.com)
+        if (
+          pathname === "/stream" ||
+          pathname === "/api/stream" ||
+          pathname.startsWith("/stream/") ||
+          pathname.startsWith("/api/stream/")
+        ) {
+          if (req.method === "OPTIONS") {
+            res.statusCode = 204;
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
+            res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept, User-Agent");
+            res.setHeader("Access-Control-Max-Age", "86400");
+            res.end();
+            return;
+          }
+
+          const pathId = pathname.startsWith("/api/stream/")
+            ? pathname.slice("/api/stream/".length)
+            : pathname.startsWith("/stream/")
+            ? pathname.slice("/stream/".length)
+            : "";
+          const rawId = pathId || urlObj.searchParams.get("id") || urlObj.searchParams.get("videoId") || urlObj.searchParams.get("url") || "";
           const vidId = rawId.replace(/^yt-/, "").trim();
           if (!vidId) {
             res.statusCode = 400;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify({ error: "Missing video ID" }));
+            return;
+          }
+
+          if (req.method === "POST") {
+            const streamPath = `/stream?id=${encodeURIComponent(vidId)}`;
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify({ audioUrl: streamPath, stream_url: streamPath, id: vidId }));
             return;
           }
 
@@ -751,30 +944,130 @@ export function devYouTubePlugin(): Plugin {
             }
           }
 
+          // YouTube's googlevideo CDN returns 403 Forbidden on open-ended ranges (e.g. bytes=0-) or un-ranged requests.
+          // Clamp client range requests to bounded 1MB chunks so YouTube CDN always responds with 206 Partial Content.
+          const rangeHeader = req.headers["range"] as string | undefined;
+          let upstreamRange: string;
+          const chunkSize = 1048576; // 1 MB chunk
+
+          if (rangeHeader) {
+            const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+            if (match) {
+              const start = parseInt(match[1], 10) || 0;
+              const clientEnd = match[2] ? parseInt(match[2], 10) : null;
+              const end = clientEnd !== null ? Math.min(clientEnd, start + chunkSize - 1) : start + chunkSize - 1;
+              upstreamRange = `bytes=${start}-${end}`;
+            } else {
+              upstreamRange = `bytes=0-${chunkSize - 1}`;
+            }
+          } else {
+            upstreamRange = `bytes=0-${chunkSize - 1}`;
+          }
+
+          const upstreamHeaders: Record<string, string> = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "identity;q=1, *;q=0",
+            "Range": upstreamRange,
+          };
+
+          let upstreamRes: Response | null = null;
+
           if (audioUrl) {
-            if (req.method === "POST") {
-              res.setHeader("Content-Type", "application/json");
-              res.setHeader("Access-Control-Allow-Origin", "*");
-              res.end(JSON.stringify({ audioUrl, stream_url: audioUrl, id: vidId }));
+            try {
+              upstreamRes = await fetch(audioUrl, {
+                headers: upstreamHeaders,
+              });
+            } catch (fetchErr: any) {
+              console.warn(`[Vite Dev YouTube] Upstream initial fetch error for ${vidId}:`, fetchErr.message);
+            }
+          }
+
+          // Invalidate cache and retry if upstream returned 403 Forbidden or connection failed
+          if (!upstreamRes || upstreamRes.status === 403) {
+            console.warn(
+              `[Vite Dev YouTube] Upstream returned ${upstreamRes ? upstreamRes.status : "error"} for ${vidId}. Invalidating cache and re-deciphering fresh signature...`
+            );
+            cache.set(streamCacheKey, null, 0);
+            audioUrl = await getDirectAudioUrl(vidId, true);
+            if (audioUrl) {
+              cache.set(streamCacheKey, audioUrl, 10800);
+              try {
+                upstreamRes = await fetch(audioUrl, {
+                  headers: upstreamHeaders,
+                });
+              } catch (retryErr: any) {
+                console.warn(`[Vite Dev YouTube] Upstream retry fetch error for ${vidId}:`, retryErr.message);
+              }
+            }
+          }
+
+          // Fallback to Render microservice if direct YouTube stream is unavailable or 403
+          if (!upstreamRes || upstreamRes.status >= 400) {
+            console.warn(
+              `[Vite Dev YouTube] Local solver stream unavailable (status ${upstreamRes?.status}). Proxying server-side from Render fallback...`
+            );
+            const renderBase = process.env.VITE_EXTRACTOR_URL || "https://mevo-extractor.onrender.com";
+            const fallbackUrl = `${renderBase}/stream?id=${encodeURIComponent(vidId)}`;
+            try {
+              upstreamRes = await fetch(fallbackUrl, {
+                headers: upstreamHeaders,
+              });
+            } catch (fallbackErr: any) {
+              console.error(`[Vite Dev YouTube] Render fallback error for ${vidId}:`, fallbackErr.message);
+            }
+          }
+
+          // Pipe audio stream server-side to client (NEVER 302 redirect directly to googlevideo.com)
+          if (upstreamRes && upstreamRes.ok) {
+            res.statusCode = upstreamRes.status;
+            res.setHeader("Content-Type", upstreamRes.headers.get("content-type") || "audio/mp4");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept, User-Agent");
+            res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
+            res.setHeader("Accept-Ranges", "bytes");
+            res.setHeader("Cache-Control", "public, max-age=10800");
+
+            const contentRange = upstreamRes.headers.get("content-range");
+            if (contentRange) res.setHeader("Content-Range", contentRange);
+            const contentLength = upstreamRes.headers.get("content-length");
+            if (contentLength) res.setHeader("Content-Length", contentLength);
+
+            if (req.method === "HEAD") {
+              res.end();
               return;
             }
 
-            res.writeHead(302, {
-              Location: audioUrl,
-              "Access-Control-Allow-Origin": "*",
-              "Access-Control-Allow-Headers": "*",
-              "Cache-Control": "public, max-age=7200",
-            });
-            res.end();
-            return;
+            if (upstreamRes.body) {
+              const reader = upstreamRes.body.getReader();
+              let isClosed = false;
+              req.on("close", () => {
+                isClosed = true;
+                reader.cancel().catch(() => {});
+              });
+
+              try {
+                while (!isClosed) {
+                  const { done, value } = await reader.read();
+                  if (done || isClosed) break;
+                  res.write(Buffer.from(value));
+                }
+              } catch {
+                // Client closed stream connection
+              } finally {
+                if (!res.writableEnded) {
+                  res.end();
+                }
+              }
+              return;
+            }
           }
 
-          // Fallback to Render if local extraction fails
-          res.writeHead(302, {
-            Location: `https://mevo-extractor.onrender.com/stream?id=${encodeURIComponent(vidId)}`,
-            "Access-Control-Allow-Origin": "*",
-          });
-          res.end();
+          // If everything fails, return 502 Bad Gateway instead of 403 or 302
+          res.statusCode = 502;
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.end(JSON.stringify({ error: "Audio stream unavailable", videoId: vidId }));
           return;
         }
 

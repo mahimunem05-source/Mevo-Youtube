@@ -177,37 +177,46 @@ export async function checkExtractorHealth(): Promise<ExtractorHealth> {
  */
 export async function getVideoInfo(videoId: string): Promise<ExtractorVideoInfo> {
   const baseUrl = getExtractorBaseUrl();
-  const url = buildYouTubeWatchUrl(videoId);
+  const cleanId = extractYouTubeVideoId(videoId) || videoId.replace(/^yt-/, "").trim();
+  const url = buildYouTubeWatchUrl(cleanId);
 
   try {
-    const res = await fetch(`${baseUrl}/api/extract`, {
+    let res = await fetch(`${baseUrl}/api/extract`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, videoId: cleanId, id: cleanId }),
     });
+
+    if (!res.ok) {
+      // Fallback: try GET with query parameters
+      res = await fetch(`${baseUrl}/api/extract?id=${encodeURIComponent(cleanId)}`);
+    }
 
     if (!res.ok) {
       let errMessage = `HTTP ${res.status}`;
       try {
         const data = await res.json();
         if (data.error) errMessage = data.error;
-      } catch {
-        // use default
-      }
+      } catch {}
       throw new Error(errMessage);
     }
 
     const data = await res.json();
+    const resolvedStreamUrl =
+      data.stream_url ||
+      data.audioUrl ||
+      `${baseUrl}/stream?id=${encodeURIComponent(data.id || cleanId)}`;
+
     return {
-      id: data.id || extractYouTubeVideoId(videoId),
+      id: data.id || cleanId,
       title: data.title || "Unknown Title",
       artist: data.artist || data.uploader || data.channelTitle || "YouTube Artist",
       duration: typeof data.duration === "number" ? Math.round(data.duration) : undefined,
-      thumbnail: data.thumbnail || undefined,
-      stream_url: data.stream_url || `${baseUrl}/stream?id=${data.id || extractYouTubeVideoId(videoId)}`,
-      audioUrl: data.audioUrl || data.stream_url || `${baseUrl}/stream?id=${data.id || extractYouTubeVideoId(videoId)}`,
+      thumbnail: data.thumbnail || `https://img.youtube.com/vi/${cleanId}/hqdefault.jpg`,
+      stream_url: resolvedStreamUrl,
+      audioUrl: data.audioUrl || resolvedStreamUrl,
       uploader: data.uploader || data.artist || undefined,
       channelTitle: data.channelTitle || data.artist || undefined,
       view_count: data.view_count || data.viewCount || undefined,
@@ -215,10 +224,18 @@ export async function getVideoInfo(videoId: string): Promise<ExtractorVideoInfo>
       description: data.description || undefined,
     };
   } catch (error) {
-    console.error("Failed to get video info:", error);
-    throw new Error(
-      error instanceof Error ? error.message : "Failed to fetch video information from extractor."
-    );
+    console.warn("Extractor getVideoInfo fallback notice:", error);
+    // Reliable fallback so player and route loaders never stall with empty audio sources
+    const fallbackStreamUrl = `${baseUrl}/stream?id=${encodeURIComponent(cleanId)}`;
+    return {
+      id: cleanId,
+      title: "YouTube Track",
+      artist: "YouTube Artist",
+      duration: 0,
+      thumbnail: `https://img.youtube.com/vi/${cleanId}/hqdefault.jpg`,
+      stream_url: fallbackStreamUrl,
+      audioUrl: fallbackStreamUrl,
+    };
   }
 }
 

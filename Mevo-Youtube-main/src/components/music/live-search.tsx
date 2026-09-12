@@ -146,7 +146,7 @@ export function LiveSearch({
   }, [autoFocus]);
 
   // In-memory client cache for fast tab-back search results
-  const searchCacheMap = useRef(new Map<string, { local: Song[]; yt: YouTubeSearchResult[]; timestamp: number }>());
+  const searchCacheMap = useRef(new Map<string, { local: Song[]; yt: YouTubeSearchResult[]; ytToken?: string | null; timestamp: number }>());
 
   // 450ms Parallel Search Effect (Local DB + YouTube) with query normalization and caching
   useEffect(() => {
