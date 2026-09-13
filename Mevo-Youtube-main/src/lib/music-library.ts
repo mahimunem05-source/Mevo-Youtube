@@ -51,6 +51,8 @@ export function setCachedCatalogue(songs: PlayerSong[]): void {
   }
 }
 
+import { getFromApiCache, setInApiCache } from "@/services/apiCacheService";
+
 export interface UnifiedMusicLibraryData {
   allSongs: PlayerSong[];
   artists: ArtistGroup[];
@@ -62,8 +64,59 @@ export interface UnifiedMusicLibraryData {
 /**
  * Fetches all songs across all homepage categories (YouTube + Local Database)
  * and returns a deduplicated, rich catalog.
+ * Multi-layer caching: Checks localStorage first, then Supabase api_cache, only calling YouTube API if both are missing.
  */
 export async function fetchUnifiedCatalogue(): Promise<UnifiedMusicLibraryData> {
+  // 1. Check client-side localStorage first
+  const localCached = getCachedCatalogue();
+  let cachedCatalogue = localCached && localCached.length >= 20 ? localCached : null;
+
+  // 2. Fall back to shared Supabase persistent cache
+  if (!cachedCatalogue) {
+    const supabaseCached = await getFromApiCache<PlayerSong[]>("catalogue:unified");
+    if (supabaseCached && Array.isArray(supabaseCached) && supabaseCached.length >= 20) {
+      cachedCatalogue = supabaseCached;
+      setCachedCatalogue(cachedCatalogue);
+    }
+  }
+
+  // 3. If cached catalogue exists (from localStorage or Supabase), assemble without calling YouTube API
+  if (cachedCatalogue && cachedCatalogue.length >= 20) {
+    const [dbSongsResult, dbArtistsResult, customAlbumsResult] = await Promise.allSettled([
+      getSongs().catch(() => []),
+      getArtists().catch(() => []),
+      getPublishedCustomAlbums().catch(() => []),
+    ]);
+
+    const rawDbSongs = dbSongsResult.status === "fulfilled" ? dbSongsResult.value : [];
+    const dbArtists = dbArtistsResult.status === "fulfilled" ? dbArtistsResult.value : [];
+    const customAlbums = customAlbumsResult.status === "fulfilled" ? customAlbumsResult.value : [];
+
+    const convertedDbSongs = rawDbSongs.map((s) => databaseSongToPlayerSong(s));
+    const mergedList: PlayerSong[] = [...convertedDbSongs];
+    const seenIds = new Set<string>(mergedList.map((s) => s.id));
+
+    for (const song of cachedCatalogue) {
+      if (song && song.id && !seenIds.has(song.id)) {
+        seenIds.add(song.id);
+        mergedList.push(song);
+      }
+    }
+
+    const artists = groupSongsByArtist(mergedList, dbArtists);
+    const albums = groupSongsByAlbum(mergedList, customAlbums);
+    replaceRuntimeSongs(mergedList);
+
+    return {
+      allSongs: mergedList,
+      artists,
+      albums,
+      dbArtists,
+      customAlbums,
+    };
+  }
+
+  // 4. Cache missing: fetch fresh data from database and YouTube (standardized with index.tsx)
   const [dbSongsResult, dbArtistsResult, customAlbumsResult, ytResults] = await Promise.allSettled([
     getSongs().catch(() => []),
     getArtists().catch(() => []),
@@ -75,7 +128,7 @@ export async function fetchUnifiedCatalogue(): Promise<UnifiedMusicLibraryData> 
           if (sec.type === "chart") {
             const songs = await fetchYouTubeTrending(
               sec.regionCode || "BD",
-              50,
+              20,
               "bangla",
               sec.title
             );
@@ -92,10 +145,11 @@ export async function fetchUnifiedCatalogue(): Promise<UnifiedMusicLibraryData> 
                       ? "boost-aura"
                       : "global";
 
+            // Standardized with index.tsx: relevance / 20 targetCount to share the exact same cache key
             const songs = await fetchYouTubeCategoryTracks(
               sec.query,
-              sec.order || "viewCount",
-              50,
+              sec.order || "relevance",
+              20,
               sectionId,
               sec.title
             );
@@ -151,10 +205,11 @@ export async function fetchUnifiedCatalogue(): Promise<UnifiedMusicLibraryData> 
   // Fallback to local storage cache if network returned very few items
   const finalSongs = uniqueSongs.length > 0 ? uniqueSongs : getCachedCatalogue();
 
-  // Save to cache
+  // Save to cache (localStorage + Supabase persistent cache)
   if (finalSongs.length > 0) {
     setCachedCatalogue(finalSongs);
     replaceRuntimeSongs(finalSongs);
+    void setInApiCache("catalogue:unified", "category", finalSongs, 20 * 3600);
   }
 
   // Parse Artists and Albums

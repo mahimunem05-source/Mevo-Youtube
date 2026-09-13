@@ -25,6 +25,7 @@ import { startEngagementTracking } from "@/lib/ranking/engagement-tracker";
 import { createUniversalSmartQueue, generateDiscoveryQueue } from "@/lib/ranking/queue-engine";
 import { useSettings } from "@/context/SettingsContext";
 import { getYouTubeStreamUrl, extractYouTubeVideoId } from "@/lib/extractor";
+import { getDeviceId } from "@/utils/device";
 import { youtubePlayerBridge } from "@/lib/youtube-player-bridge";
 import { getRelatedTracks } from "@/lib/youtube-api";
 import {
@@ -172,6 +173,7 @@ interface StoredPlaybackSession {
   repeat: RepeatMode;
   volume: number;
   autoplayEnabled: boolean;
+  deviceId?: string;
 }
 
 function readStoredFavorites(): Song[] {
@@ -363,9 +365,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const consecutiveSkipCountRef = useRef(0);
   const skipTimerRef = useRef<NodeJS.Timeout | number | null>(null);
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+  const streamRetryCountRef = useRef<Record<string, number>>({});
+  const streamRetryTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
+  const stallTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
+  const deviceIdRef = useRef<string>(getDeviceId());
 
   const [catalogue, setCatalogue] = useState<Song[]>([...staticSongs]);
   const [session, setSession] = useState<PlaybackSession>(EMPTY_SESSION);
+  const sessionRef = useRef<PlaybackSession>(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
+    return () => {
+      if (streamRetryTimeoutRef.current) clearTimeout(streamRetryTimeoutRef.current);
+      if (stallTimeoutRef.current) clearTimeout(stallTimeoutRef.current);
+    };
+  }, []);
   const [isPlaying, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -551,6 +569,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         repeat,
         volume,
         autoplayEnabled,
+        deviceId: deviceIdRef.current,
       };
       window.localStorage.setItem(PLAYER_STORAGE_KEY, JSON.stringify(payload));
     } catch (error) {
@@ -648,8 +667,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Safe playback trigger
-  const executePlay = useCallback(async () => {
+  // Safe playback trigger wrapped in Promise tracking & AbortError catch
+  const safePlay = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio) return;
 
@@ -662,7 +681,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       currentSrc.endsWith("/stream?id=undefined") ||
       currentSrc.endsWith("/stream?id=null")
     ) {
-      console.warn("[Mevo Audio] Skipping executePlay: audio has no valid source configured.", currentSrc);
+      console.warn("[Mevo Audio] Skipping play: audio has no valid source configured.", currentSrc);
       return;
     }
 
@@ -671,35 +690,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.volume = muted ? 0 : Math.max(0, Math.min(1, volume));
 
     try {
-      console.log("[AUDIO DIAGNOSTIC] audio.play() requested. Current state:", {
-        src: audio.src,
-        currentSrc: audio.currentSrc,
-        readyState: audio.readyState,
-        networkState: audio.networkState,
-        paused: audio.paused,
-      });
-      await audio.play();
-      console.log("[AUDIO DIAGNOSTIC] audio.play() resolved successfully!");
+      const p = audio.play();
+      playPromiseRef.current = p;
+      await p;
     } catch (error: unknown) {
       const err = error as { name?: string; message?: string; code?: number };
-      console.error("[AUDIO DIAGNOSTIC] audio.play() REJECTED:", {
-        name: err.name,
-        message: err.message,
-        code: err.code,
-        error: err,
-        src: audio.src,
-        currentSrc: audio.currentSrc,
-        readyState: audio.readyState,
-        networkState: audio.networkState,
-        audioErrorCode: audio.error?.code,
-        audioErrorMessage: audio.error?.message,
-      });
       if (err.name === "AbortError") {
-        // Normal when user skips quickly between tracks; safely ignore
+        // Normal when user pauses or skips quickly between tracks; safely ignore
         return;
       }
       if (err.name === "NotAllowedError") {
-        console.warn("[Mahi Music Audio] Mobile user gesture required for playback. Holding track without auto-skip.");
+        console.warn("[Mevo Audio] Mobile user gesture required for playback. Holding track without auto-skip.");
         setPlaying(false);
         setIsBuffering(false);
         return;
@@ -710,11 +711,40 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setIsBuffering(false);
         return;
       }
-      console.warn("[Mahi Music Audio] Playback execution notice:", error);
+      console.warn("[Mevo Audio] Playback execution notice:", error);
       setPlaying(false);
       setIsBuffering(false);
+    } finally {
+      playPromiseRef.current = null;
     }
   }, [muted, volume]);
+
+  const safePause = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    // Ensure pause is only executed when not mid-play-promise
+    if (playPromiseRef.current) {
+      try {
+        await playPromiseRef.current;
+      } catch {
+        // Handled in safePlay
+      }
+    }
+
+    // Ensure pause() is only executed when actively playing
+    if (!audio.paused) {
+      try {
+        audio.pause();
+      } catch (err: any) {
+        if (err?.name !== "AbortError") {
+          console.warn("[Mevo Audio safePause notice]:", err);
+        }
+      }
+    }
+  }, []);
+
+  const executePlay = safePlay;
 
   // Synchronously load and initiate playback on HTMLAudioElement within gesture stack
   const startAudioPlayback = useCallback(
@@ -748,26 +778,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       audio.currentTime = 0;
       audio.load();
-      audio.muted = muted;
-      audio.volume = muted ? 0 : Math.max(0, Math.min(1, volume));
-      const p = audio.play();
-      if (p !== undefined) {
-        p.catch((err: any) => {
-          if (err?.name === "NotAllowedError") {
-            console.warn("[Mevo Audio] User gesture required for mobile playback. Holding track state.");
-            setPlaying(false);
-            setIsBuffering(false);
-          } else if (err?.name === "NotSupportedError") {
-            console.warn("[Mevo Audio] Audio format not supported or source empty. Holding state.");
-            setPlaying(false);
-            setIsBuffering(false);
-          } else if (err?.name !== "AbortError") {
-            console.warn("[Mevo Audio] Direct play notice:", err);
-          }
-        });
-      }
+      void safePlay();
     },
-    [muted, volume],
+    [safePlay],
   );
 
   const activateSong = useCallback(
@@ -1031,21 +1044,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const playFromCurrentQueue = useCallback(
     (index: number) => {
-      setSession((previous) => {
-        if (index < 0 || index >= previous.queue.length) return previous;
-        const song = previous.queue[index];
-        if (!song) return previous;
-        startAudioPlayback(song);
-        const previousSong = previous.queue[previous.currentIndex];
-        activateSong(song, previousSong, previous.playbackSource, { isIntraQueueNavigation: true });
-        return {
-          ...previous,
-          currentIndex: index,
-          history: previousSong
-            ? [...previous.history, previousSong.id].slice(-100)
-            : previous.history,
-        };
-      });
+      const previous = sessionRef.current;
+      if (index < 0 || index >= previous.queue.length) return;
+      const song = previous.queue[index];
+      if (!song) return;
+      const previousSong = previous.queue[previous.currentIndex];
+
+      setSession((curr) => ({
+        ...curr,
+        currentIndex: index,
+        history: previousSong
+          ? [...curr.history, previousSong.id].slice(-100)
+          : curr.history,
+      }));
+
+      startAudioPlayback(song);
+      activateSong(song, previousSong, previous.playbackSource, { isIntraQueueNavigation: true });
     },
     [activateSong, startAudioPlayback],
   );
@@ -1131,246 +1145,203 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   );
 
   const playNext = useCallback((song: Song) => {
-    setSession((previous) => {
-      if (previous.currentIndex < 0) return previous;
-      const withoutSong = previous.queue.filter((item) => item.id !== song.id);
-      const insertAt = Math.min(previous.currentIndex + 1, withoutSong.length);
-      const queue = [...withoutSong.slice(0, insertAt), song, ...withoutSong.slice(insertAt)];
-      const currentSongId = previous.queue[previous.currentIndex]?.id;
-      const currentIndex = queue.findIndex((item) => item.id === currentSongId);
-      const originalQueue = dedupeSongs([...previous.originalQueue, song]);
-      playbackEvents.emit("QUEUE_CHANGE", {
-        queue,
-        source: previous.queueSource,
-        reason: "play-next",
-      });
-      return { ...previous, queue, originalQueue, currentIndex: Math.max(currentIndex, 0) };
+    const previous = sessionRef.current;
+    if (previous.currentIndex < 0) return;
+    const withoutSong = previous.queue.filter((item) => item.id !== song.id);
+    const insertAt = Math.min(previous.currentIndex + 1, withoutSong.length);
+    const queue = [...withoutSong.slice(0, insertAt), song, ...withoutSong.slice(insertAt)];
+    const currentSongId = previous.queue[previous.currentIndex]?.id;
+    const currentIndex = queue.findIndex((item) => item.id === currentSongId);
+    const originalQueue = dedupeSongs([...previous.originalQueue, song]);
+
+    setSession((curr) => ({
+      ...curr,
+      queue,
+      originalQueue,
+      currentIndex: Math.max(currentIndex, 0),
+    }));
+
+    playbackEvents.emit("QUEUE_CHANGE", {
+      queue,
+      source: previous.queueSource,
+      reason: "play-next",
     });
   }, []);
 
   const addToQueue = useCallback((song: Song) => {
-    setSession((previous) => {
-      if (previous.queue.some((item) => item.id === song.id)) return previous;
-      const queue = [...previous.queue, song];
-      const originalQueue = dedupeSongs([...previous.originalQueue, song]);
-      playbackEvents.emit("QUEUE_CHANGE", {
-        queue,
-        source: previous.queueSource,
-        reason: "add-to-queue",
-      });
-      return { ...previous, queue, originalQueue };
+    const previous = sessionRef.current;
+    if (previous.queue.some((item) => item.id === song.id)) return;
+    const queue = [...previous.queue, song];
+    const originalQueue = dedupeSongs([...previous.originalQueue, song]);
+
+    setSession((curr) => ({ ...curr, queue, originalQueue }));
+
+    playbackEvents.emit("QUEUE_CHANGE", {
+      queue,
+      source: previous.queueSource,
+      reason: "add-to-queue",
     });
   }, []);
 
   const appendSongsToQueue = useCallback((newSongs: Song[]) => {
     if (!newSongs || newSongs.length === 0) return;
-    setSession((previous) => {
-      const existingIds = new Set(
-        previous.queue.map((s) => (s.id || "").replace(/^yt-/, "").trim().toLowerCase())
-      );
-      const uniqueNewSongs = newSongs.filter((s) => {
-        const rawId = (s.id || "").replace(/^yt-/, "").trim().toLowerCase();
-        if (!rawId || existingIds.has(rawId)) return false;
-        existingIds.add(rawId);
-        return true;
-      });
-      if (uniqueNewSongs.length === 0) return previous;
-      const queue = [...previous.queue, ...uniqueNewSongs];
-      const originalQueue = dedupeSongs([...previous.originalQueue, ...uniqueNewSongs]);
-      playbackEvents.emit("QUEUE_CHANGE", {
-        queue,
-        source: previous.queueSource,
-        reason: "add-to-queue",
-      });
-      return { ...previous, queue, originalQueue };
+    const previous = sessionRef.current;
+    const existingIds = new Set(
+      previous.queue.map((s) => (s.id || "").replace(/^yt-/, "").trim().toLowerCase())
+    );
+    const uniqueNewSongs = newSongs.filter((s) => {
+      const rawId = (s.id || "").replace(/^yt-/, "").trim().toLowerCase();
+      if (!rawId || existingIds.has(rawId)) return false;
+      existingIds.add(rawId);
+      return true;
+    });
+    if (uniqueNewSongs.length === 0) return;
+    const queue = [...previous.queue, ...uniqueNewSongs];
+    const originalQueue = dedupeSongs([...previous.originalQueue, ...uniqueNewSongs]);
+
+    setSession((curr) => ({ ...curr, queue, originalQueue }));
+
+    playbackEvents.emit("QUEUE_CHANGE", {
+      queue,
+      source: previous.queueSource,
+      reason: "add-to-queue",
     });
   }, []);
 
   const removeFromQueue = useCallback(
     (index: number) => {
-      setSession((previous) => {
-        const target = previous.queue[index];
-        if (!target) return previous;
-        const queue = previous.queue.filter((_, i) => i !== index);
-        const originalQueue = previous.originalQueue.filter((item) => item.id !== target.id);
-        playbackEvents.emit("QUEUE_CHANGE", {
-          queue,
-          source: previous.queueSource,
-          reason: "remove",
-        });
+      const previous = sessionRef.current;
+      const target = previous.queue[index];
+      if (!target) return;
+      const queue = previous.queue.filter((_, i) => i !== index);
+      const originalQueue = previous.originalQueue.filter((item) => item.id !== target.id);
 
-        if (index > previous.currentIndex) {
-          return { ...previous, queue, originalQueue };
-        }
-        if (index < previous.currentIndex) {
-          return { ...previous, queue, originalQueue, currentIndex: previous.currentIndex - 1 };
-        }
+      let nextIndex = previous.currentIndex;
+      let songToActivate: Song | null = null;
+
+      if (index > previous.currentIndex) {
+        // nextIndex remains unaffected
+      } else if (index < previous.currentIndex) {
+        nextIndex = previous.currentIndex - 1;
+      } else {
         if (queue.length === 0) {
           setPlaying(false);
-          return { ...previous, queue, originalQueue, currentIndex: -1 };
+          nextIndex = -1;
+        } else {
+          nextIndex = Math.min(index, queue.length - 1);
+          songToActivate = queue[nextIndex];
         }
-        const nextIndex = Math.min(index, queue.length - 1);
-        activateSong(queue[nextIndex], target);
-        return { ...previous, queue, originalQueue, currentIndex: nextIndex };
+      }
+
+      setSession((curr) => ({
+        ...curr,
+        queue,
+        originalQueue,
+        currentIndex: nextIndex,
+      }));
+
+      playbackEvents.emit("QUEUE_CHANGE", {
+        queue,
+        source: previous.queueSource,
+        reason: "remove",
       });
+
+      if (songToActivate) {
+        activateSong(songToActivate, target);
+      }
     },
     [activateSong],
   );
 
   const reorderQueue = useCallback(
     (fromIndex: number, toIndex: number) => {
-      setSession((previous) => {
-        if (
-          fromIndex < 0 ||
-          fromIndex >= previous.queue.length ||
-          toIndex < 0 ||
-          toIndex >= previous.queue.length ||
-          fromIndex === toIndex
-        ) {
-          return previous;
-        }
+      const previous = sessionRef.current;
+      if (
+        fromIndex < 0 ||
+        fromIndex >= previous.queue.length ||
+        toIndex < 0 ||
+        toIndex >= previous.queue.length ||
+        fromIndex === toIndex
+      ) {
+        return;
+      }
 
-        const queue = [...previous.queue];
-        const [moved] = queue.splice(fromIndex, 1);
-        queue.splice(toIndex, 0, moved);
+      const queue = [...previous.queue];
+      const [moved] = queue.splice(fromIndex, 1);
+      queue.splice(toIndex, 0, moved);
 
-        let currentIndex = previous.currentIndex;
-        if (previous.currentIndex === fromIndex) {
-          currentIndex = toIndex;
-        } else if (
-          fromIndex < previous.currentIndex &&
-          toIndex >= previous.currentIndex
-        ) {
-          currentIndex = previous.currentIndex - 1;
-        } else if (
-          fromIndex > previous.currentIndex &&
-          toIndex <= previous.currentIndex
-        ) {
-          currentIndex = previous.currentIndex + 1;
-        }
+      let currentIndex = previous.currentIndex;
+      if (previous.currentIndex === fromIndex) {
+        currentIndex = toIndex;
+      } else if (
+        fromIndex < previous.currentIndex &&
+        toIndex >= previous.currentIndex
+      ) {
+        currentIndex = previous.currentIndex - 1;
+      } else if (
+        fromIndex > previous.currentIndex &&
+        toIndex <= previous.currentIndex
+      ) {
+        currentIndex = previous.currentIndex + 1;
+      }
 
-        playbackEvents.emit("QUEUE_CHANGE", { queue, source: previous.queueSource, reason: "reorder" });
-        return { ...previous, queue, currentIndex };
-      });
+      setSession((curr) => ({ ...curr, queue, currentIndex }));
+      playbackEvents.emit("QUEUE_CHANGE", { queue, source: previous.queueSource, reason: "reorder" });
     },
     [],
   );
 
   const clearQueue = useCallback(() => {
-    setSession((previous) => {
-      const currentSong = previous.queue[previous.currentIndex];
-      const queue = currentSong ? [currentSong] : [];
-      playbackEvents.emit("QUEUE_CHANGE", { queue, source: previous.queueSource, reason: "clear" });
-      return { ...previous, queue, originalQueue: queue, currentIndex: queue.length > 0 ? 0 : -1 };
-    });
-  }, []);
+    const previous = sessionRef.current;
+    const currentSong = previous.queue[previous.currentIndex];
+    const queue = currentSong ? [currentSong] : [];
 
+    setSession((curr) => ({
+      ...curr,
+      queue,
+      originalQueue: queue,
+      currentIndex: queue.length > 0 ? 0 : -1,
+    }));
+
+    playbackEvents.emit("QUEUE_CHANGE", { queue, source: previous.queueSource, reason: "clear" });
+  }, []);
   const step = useCallback(
     (direction: 1 | -1, auto = false) => {
-      setSession((previous) => {
-        if (previous.queue.length === 0 || previous.currentIndex < 0) return previous;
-        const currentSong = previous.queue[previous.currentIndex];
-        const isMahi =
-          previous.playbackSource === "mahi_select" ||
-          isMahiSelectContext(previous.queueSource, previous.playbackSource, currentSong);
-        const isCustom =
-          previous.playbackSource === "custom_playlist" ||
-          isCustomPlaylistContext(previous.queueSource, previous.playbackSource);
-        const isIsolated = isMahi || isCustom;
-        const isolatedSourceKey = isCustom ? "custom_playlist" : "mahi_select";
+      const previous = sessionRef.current;
+      if (previous.queue.length === 0 || previous.currentIndex < 0) return;
+      const currentSong = previous.queue[previous.currentIndex];
+      const isMahi =
+        previous.playbackSource === "mahi_select" ||
+        isMahiSelectContext(previous.queueSource, previous.playbackSource, currentSong);
+      const isCustom =
+        previous.playbackSource === "custom_playlist" ||
+        isCustomPlaylistContext(previous.queueSource, previous.playbackSource);
+      const isIsolated = isMahi || isCustom;
+      const isolatedSourceKey = isCustom ? "custom_playlist" : "mahi_select";
 
-        // 1. Isolated Playback Flow (Mahi Select & Custom Albums/Playlists)
-        // Completely isolated from YouTube recommendations
-        if (isIsolated) {
-          if (shuffle && currentSong) {
-            if (direction === -1) {
-              if (previous.history.length === 0) return previous;
-              const previousId = previous.history[previous.history.length - 1];
-              const previousSong =
-                previous.queue.find((song) => song.id === previousId) ??
-                catalogue.find((song) => song.id === previousId);
-              if (!previousSong) {
-                return { ...previous, history: previous.history.slice(0, -1) };
-              }
-              startAudioPlayback(previousSong);
-              activateSong(previousSong, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
-              playbackEvents.emit("PREVIOUS", { song: previousSong });
-              const restoredIndex = previous.queue.findIndex((song) => song.id === previousSong.id);
-              return {
-                ...previous,
-                currentIndex: restoredIndex >= 0 ? restoredIndex : previous.currentIndex,
-                history: previous.history.slice(0, -1),
-              };
-            }
-
-            let pool = previous.queue.filter(
-              (song) => song.id !== currentSong.id && !shufflePlayedIdsRef.current.has(song.id),
-            );
-            let cycleReset = false;
-            if (pool.length === 0) {
-              pool = previous.queue.filter((song) => song.id !== currentSong.id);
-              cycleReset = true;
-            }
-
-            const nextSong =
-              pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : currentSong;
-            if (nextSong.id === currentSong.id) return previous;
-
-            shufflePlayedIdsRef.current = cycleReset
-              ? new Set([nextSong.id])
-              : new Set(shufflePlayedIdsRef.current).add(nextSong.id);
-
-            startAudioPlayback(nextSong);
-            activateSong(nextSong, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
-            playbackEvents.emit("NEXT", { song: nextSong, auto });
-            const nextIndex = previous.queue.findIndex((song) => song.id === nextSong.id);
-            return {
-              ...previous,
-              currentIndex: nextIndex >= 0 ? nextIndex : previous.currentIndex,
-              history: [...previous.history, currentSong.id].slice(-100),
-            };
-          }
-
-          // Sequential Mode: strictly queue[currentIndex + 1] or loop to beginning (index 0)
-          const nextIndex =
-            (previous.currentIndex + direction + previous.queue.length) % previous.queue.length;
-          const song = previous.queue[nextIndex];
-          if (song) {
-            startAudioPlayback(song);
-            activateSong(song, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
-          }
-          playbackEvents.emit(direction === 1 ? "NEXT" : "PREVIOUS", { song, auto });
-
-          return {
-            ...previous,
-            currentIndex: nextIndex,
-            history: currentSong
-              ? [...previous.history, currentSong.id].slice(-100)
-              : previous.history,
-          };
-        }
-
-        // 2. Default YouTube / Radio Playback Flow
-        // Shuffle Mode Handling
+      // 1. Isolated Playback Flow (Mahi Select & Custom Albums/Playlists)
+      if (isIsolated) {
         if (shuffle && currentSong) {
           if (direction === -1) {
-            if (previous.history.length === 0) return previous;
+            if (previous.history.length === 0) return;
             const previousId = previous.history[previous.history.length - 1];
             const previousSong =
               previous.queue.find((song) => song.id === previousId) ??
               catalogue.find((song) => song.id === previousId);
             if (!previousSong) {
-              return { ...previous, history: previous.history.slice(0, -1) };
+              setSession((curr) => ({ ...curr, history: curr.history.slice(0, -1) }));
+              return;
             }
-            startAudioPlayback(previousSong);
-            activateSong(previousSong, currentSong, undefined, { isIntraQueueNavigation: true });
-            playbackEvents.emit("PREVIOUS", { song: previousSong });
             const restoredIndex = previous.queue.findIndex((song) => song.id === previousSong.id);
-            return {
-              ...previous,
-              currentIndex: restoredIndex >= 0 ? restoredIndex : previous.currentIndex,
-              history: previous.history.slice(0, -1),
-            };
+            setSession((curr) => ({
+              ...curr,
+              currentIndex: restoredIndex >= 0 ? restoredIndex : curr.currentIndex,
+              history: curr.history.slice(0, -1),
+            }));
+            startAudioPlayback(previousSong);
+            activateSong(previousSong, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
+            playbackEvents.emit("PREVIOUS", { song: previousSong });
+            return;
           }
 
           let pool = previous.queue.filter(
@@ -1384,159 +1355,233 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
           const nextSong =
             pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : currentSong;
-          if (nextSong.id === currentSong.id) return previous;
+          if (nextSong.id === currentSong.id) return;
 
           shufflePlayedIdsRef.current = cycleReset
             ? new Set([nextSong.id])
             : new Set(shufflePlayedIdsRef.current).add(nextSong.id);
 
-          startAudioPlayback(nextSong);
-          activateSong(nextSong, currentSong, undefined, { isIntraQueueNavigation: true });
-          playbackEvents.emit("NEXT", { song: nextSong, auto });
           const nextIndex = previous.queue.findIndex((song) => song.id === nextSong.id);
-          return {
-            ...previous,
-            currentIndex: nextIndex >= 0 ? nextIndex : previous.currentIndex,
-            history: [...previous.history, currentSong.id].slice(-100),
-          };
+          setSession((curr) => ({
+            ...curr,
+            currentIndex: nextIndex >= 0 ? nextIndex : curr.currentIndex,
+            history: [...curr.history, currentSong.id].slice(-100),
+          }));
+          startAudioPlayback(nextSong);
+          activateSong(nextSong, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
+          playbackEvents.emit("NEXT", { song: nextSong, auto });
+          return;
         }
 
-        // Sequential Mode Handling (Default YouTube Stream)
-        const atEnd = previous.currentIndex >= previous.queue.length - 1;
-        const atStart = previous.currentIndex <= 0;
-
-        if (direction === 1 && atEnd) {
-          const currentTrack = previous.queue[previous.currentIndex];
-          if (autoplayEnabled && currentTrack) {
-            void fetchQueueContinuation(currentTrack, previous.history)
-              .then((continuationTracks) => {
-                if (!continuationTracks || continuationTracks.length === 0) {
-                  setPlaying(false);
-                  return;
-                }
-                setSession((curr) => {
-                  if (
-                    curr.playbackSource === "mahi_select" ||
-                    curr.playbackSource === "custom_playlist" ||
-                    isIsolatedPlaybackContext(curr.queueSource, curr.playbackSource)
-                  ) {
-                    return curr;
-                  }
-
-                  const existingIds = new Set(
-                    curr.queue.map((q) => (q.id || "").replace(/^yt-/, "").trim().toLowerCase())
-                  );
-                  const fresh = continuationTracks.filter(
-                    (t) => !existingIds.has((t.id || "").replace(/^yt-/, "").trim().toLowerCase())
-                  );
-                  if (fresh.length === 0) {
-                    setPlaying(false);
-                    return curr;
-                  }
-
-                  const extendedQueue = [...curr.queue, ...fresh];
-                  const extendedOriginal = dedupeSongs([...curr.originalQueue, ...fresh]);
-                  const nextSong = fresh[0];
-                  const nextIndex = curr.currentIndex + 1;
-
-                  startAudioPlayback(nextSong);
-                  activateSong(nextSong, curr.queue[curr.currentIndex], undefined, { isIntraQueueNavigation: true });
-                  playbackEvents.emit("NEXT", { song: nextSong, auto: true });
-                  playbackEvents.emit("QUEUE_CHANGE", {
-                    queue: extendedQueue,
-                    source: curr.queueSource,
-                    reason: "autoplay",
-                  });
-
-                  return {
-                    ...curr,
-                    queue: extendedQueue,
-                    originalQueue: extendedOriginal,
-                    currentIndex: nextIndex,
-                    history: [...curr.history, curr.queue[curr.currentIndex]?.id].filter(Boolean) as string[],
-                  };
-                });
-              })
-              .catch(() => setPlaying(false));
-            return previous;
-          }
-
-          setPlaying(false);
-          return {
-            ...previous,
-            currentIndex: 0,
-            history: currentTrack
-              ? [...previous.history, currentTrack.id].slice(-100)
-              : previous.history,
-          };
-        }
-
-        if (direction === -1 && atStart) {
-          return previous;
-        }
-
+        // Sequential Mode
         const nextIndex =
           (previous.currentIndex + direction + previous.queue.length) % previous.queue.length;
         const song = previous.queue[nextIndex];
-        const previousSong = previous.queue[previous.currentIndex];
+
+        setSession((curr) => ({
+          ...curr,
+          currentIndex: nextIndex,
+          history: currentSong
+            ? [...curr.history, currentSong.id].slice(-100)
+            : curr.history,
+        }));
         if (song) {
           startAudioPlayback(song);
-          activateSong(song, previousSong, undefined, { isIntraQueueNavigation: true });
+          activateSong(song, currentSong, isolatedSourceKey, { isIntraQueueNavigation: true });
         }
         playbackEvents.emit(direction === 1 ? "NEXT" : "PREVIOUS", { song, auto });
+        return;
+      }
 
-        // Continuous Queue Replenishment: If <= 3 tracks remain, fetch next radio batch
-        const remaining = previous.queue.length - (nextIndex + 1);
-        if (direction === 1 && autoplayEnabled && remaining <= 3 && song && !isIsolated) {
-          void fetchQueueContinuation(song, previous.history)
-            .then((continuationTracks) => {
-              if (!continuationTracks || continuationTracks.length === 0) return;
-              setSession((curr) => {
-                if (
-                  curr.playbackSource === "mahi_select" ||
-                  curr.playbackSource === "custom_playlist" ||
-                  isIsolatedPlaybackContext(curr.queueSource, curr.playbackSource)
-                ) {
-                  return curr;
-                }
-
-                const existingIds = new Set(
-                  curr.queue.map((q) => (q.id || "").replace(/^yt-/, "").trim().toLowerCase())
-                );
-                const fresh = continuationTracks.filter(
-                  (t) => !existingIds.has((t.id || "").replace(/^yt-/, "").trim().toLowerCase())
-                );
-                if (fresh.length === 0) return curr;
-
-                const extendedQueue = [...curr.queue, ...fresh];
-                const extendedOriginal = dedupeSongs([...curr.originalQueue, ...fresh]);
-
-                playbackEvents.emit("QUEUE_CHANGE", {
-                  queue: extendedQueue,
-                  source: curr.queueSource,
-                  reason: "autoplay",
-                });
-
-                return {
-                  ...curr,
-                  queue: extendedQueue,
-                  originalQueue: extendedOriginal,
-                };
-              });
-            })
-            .catch((err) => console.warn("Continuation fetch notice:", err));
+      // 2. Default YouTube / Radio Playback Flow
+      // Shuffle Mode Handling
+      if (shuffle && currentSong) {
+        if (direction === -1) {
+          if (previous.history.length === 0) return;
+          const previousId = previous.history[previous.history.length - 1];
+          const previousSong =
+            previous.queue.find((song) => song.id === previousId) ??
+            catalogue.find((song) => song.id === previousId);
+          if (!previousSong) {
+            setSession((curr) => ({ ...curr, history: curr.history.slice(0, -1) }));
+            return;
+          }
+          const restoredIndex = previous.queue.findIndex((song) => song.id === previousSong.id);
+          setSession((curr) => ({
+            ...curr,
+            currentIndex: restoredIndex >= 0 ? restoredIndex : curr.currentIndex,
+            history: curr.history.slice(0, -1),
+          }));
+          startAudioPlayback(previousSong);
+          activateSong(previousSong, currentSong, undefined, { isIntraQueueNavigation: true });
+          playbackEvents.emit("PREVIOUS", { song: previousSong });
+          return;
         }
 
-        return {
-          ...previous,
-          currentIndex: nextIndex,
-          history: previousSong
-            ? [...previous.history, previousSong.id].slice(-100)
-            : previous.history,
-        };
-      });
+        let pool = previous.queue.filter(
+          (song) => song.id !== currentSong.id && !shufflePlayedIdsRef.current.has(song.id),
+        );
+        let cycleReset = false;
+        if (pool.length === 0) {
+          pool = previous.queue.filter((song) => song.id !== currentSong.id);
+          cycleReset = true;
+        }
+
+        const nextSong =
+          pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : currentSong;
+        if (nextSong.id === currentSong.id) return;
+
+        shufflePlayedIdsRef.current = cycleReset
+          ? new Set([nextSong.id])
+          : new Set(shufflePlayedIdsRef.current).add(nextSong.id);
+
+        const nextIndex = previous.queue.findIndex((song) => song.id === nextSong.id);
+        setSession((curr) => ({
+          ...curr,
+          currentIndex: nextIndex >= 0 ? nextIndex : curr.currentIndex,
+          history: [...curr.history, currentSong.id].slice(-100),
+        }));
+        startAudioPlayback(nextSong);
+        activateSong(nextSong, currentSong, undefined, { isIntraQueueNavigation: true });
+        playbackEvents.emit("NEXT", { song: nextSong, auto });
+        return;
+      }
+
+      // Sequential Mode Handling (Default YouTube Stream)
+      const atEnd = previous.currentIndex >= previous.queue.length - 1;
+      const atStart = previous.currentIndex <= 0;
+
+      if (direction === 1 && atEnd) {
+        const currentTrack = previous.queue[previous.currentIndex];
+        if (autoplayEnabled && currentTrack) {
+          void fetchQueueContinuation(currentTrack, previous.history)
+            .then((continuationTracks) => {
+              if (!continuationTracks || continuationTracks.length === 0) {
+                setPlaying(false);
+                return;
+              }
+              const curr = sessionRef.current;
+              if (
+                curr.playbackSource === "mahi_select" ||
+                curr.playbackSource === "custom_playlist" ||
+                isIsolatedPlaybackContext(curr.queueSource, curr.playbackSource)
+              ) {
+                return;
+              }
+
+              const existingIds = new Set(
+                curr.queue.map((q) => (q.id || "").replace(/^yt-/, "").trim().toLowerCase())
+              );
+              const fresh = continuationTracks.filter(
+                (t) => !existingIds.has((t.id || "").replace(/^yt-/, "").trim().toLowerCase())
+              );
+              if (fresh.length === 0) {
+                setPlaying(false);
+                return;
+              }
+
+              const extendedQueue = [...curr.queue, ...fresh];
+              const extendedOriginal = dedupeSongs([...curr.originalQueue, ...fresh]);
+              const nextSong = fresh[0];
+              const nextIndex = curr.currentIndex + 1;
+
+              setSession((c) => ({
+                ...c,
+                queue: extendedQueue,
+                originalQueue: extendedOriginal,
+                currentIndex: nextIndex,
+                history: [...c.history, curr.queue[curr.currentIndex]?.id].filter(Boolean) as string[],
+              }));
+
+              startAudioPlayback(nextSong);
+              activateSong(nextSong, curr.queue[curr.currentIndex], undefined, { isIntraQueueNavigation: true });
+              playbackEvents.emit("NEXT", { song: nextSong, auto: true });
+              playbackEvents.emit("QUEUE_CHANGE", {
+                queue: extendedQueue,
+                source: curr.queueSource,
+                reason: "autoplay",
+              });
+            })
+            .catch(() => setPlaying(false));
+          return;
+        }
+
+        setPlaying(false);
+        setSession((curr) => ({
+          ...curr,
+          currentIndex: 0,
+          history: currentTrack
+            ? [...curr.history, currentTrack.id].slice(-100)
+            : curr.history,
+        }));
+        return;
+      }
+
+      if (direction === -1 && atStart) {
+        return;
+      }
+
+      const nextIndex =
+        (previous.currentIndex + direction + previous.queue.length) % previous.queue.length;
+      const song = previous.queue[nextIndex];
+      const previousSong = previous.queue[previous.currentIndex];
+
+      setSession((curr) => ({
+        ...curr,
+        currentIndex: nextIndex,
+        history: previousSong
+          ? [...curr.history, previousSong.id].slice(-100)
+          : curr.history,
+      }));
+
+      if (song) {
+        startAudioPlayback(song);
+        activateSong(song, previousSong, undefined, { isIntraQueueNavigation: true });
+      }
+      playbackEvents.emit(direction === 1 ? "NEXT" : "PREVIOUS", { song, auto });
+
+      // Continuous Queue Replenishment: If <= 3 tracks remain, fetch next radio batch
+      const remaining = previous.queue.length - (nextIndex + 1);
+      if (direction === 1 && autoplayEnabled && remaining <= 3 && song && !isIsolated) {
+        void fetchQueueContinuation(song, previous.history)
+          .then((continuationTracks) => {
+            if (!continuationTracks || continuationTracks.length === 0) return;
+            const curr = sessionRef.current;
+            if (
+              curr.playbackSource === "mahi_select" ||
+              curr.playbackSource === "custom_playlist" ||
+              isIsolatedPlaybackContext(curr.queueSource, curr.playbackSource)
+            ) {
+              return;
+            }
+
+            const existingIds = new Set(
+              curr.queue.map((q) => (q.id || "").replace(/^yt-/, "").trim().toLowerCase())
+            );
+            const fresh = continuationTracks.filter(
+              (t) => !existingIds.has((t.id || "").replace(/^yt-/, "").trim().toLowerCase())
+            );
+            if (fresh.length === 0) return;
+
+            const extendedQueue = [...curr.queue, ...fresh];
+            const extendedOriginal = dedupeSongs([...curr.originalQueue, ...fresh]);
+
+            setSession((c) => ({
+              ...c,
+              queue: extendedQueue,
+              originalQueue: extendedOriginal,
+            }));
+
+            playbackEvents.emit("QUEUE_CHANGE", {
+              queue: extendedQueue,
+              source: curr.queueSource,
+              reason: "autoplay",
+            });
+          })
+          .catch((err) => console.warn("Continuation fetch notice:", err));
+      }
     },
-    [activateSong, catalogue, repeat, autoplayEnabled, shuffle, startAudioPlayback],
+    [activateSong, catalogue, autoplayEnabled, shuffle, startAudioPlayback],
   );
 
   const next = useCallback(() => step(1, false), [step]);
@@ -1560,18 +1605,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     setPlaying((value) => {
       const nextState = !value;
-      const audio = audioRef.current;
-      if (audio) {
-        if (nextState) {
-          audio.muted = muted;
-          audio.volume = muted ? 0 : Math.max(0, Math.min(1, volume));
-          const p = audio.play();
-          if (p !== undefined) {
-            p.catch((err) => console.warn("[Audio toggle play notice]:", err));
-          }
-        } else {
-          audio.pause();
-        }
+      if (nextState) {
+        void safePlay();
+      } else {
+        void safePause();
       }
       playbackEvents.emit(
         nextState ? "PLAY" : "PAUSE",
@@ -1579,7 +1616,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       );
       return nextState;
     });
-  }, [catalogue, current, play, muted, volume]);
+  }, [catalogue, current, play, safePlay, safePause]);
 
   const toggleShuffle = useCallback(() => {
     setShuffle((enabled) => {
@@ -1590,14 +1627,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // Synchronize Audio Track Source & Playback State
   // Synchronize Audio Track Source & Playback State for all tracks via HTMLAudioElement
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     if (!current) {
-      audio.pause();
+      void safePause();
       audio.removeAttribute("src");
       delete audio.dataset.songId;
       audio.load();
@@ -1621,7 +1657,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audioSrc.endsWith("/stream?id=undefined") ||
       audioSrc.endsWith("/stream?id=null")
     ) {
-      audio.pause();
+      void safePause();
       setPlaying(false);
       setPlaybackError(`No audio source available for "${current.title}".`);
       return;
@@ -1630,7 +1666,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const isNewTrack = audio.dataset.songId !== current.id;
     if (isNewTrack) {
       audio.dataset.songId = current.id;
-      audio.pause();
+      void safePause();
       audio.src = audioSrc;
       audio.currentTime = 0;
       setProgress(0);
@@ -1643,10 +1679,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     if (isPlaying) {
       if (audio.paused && audio.src && audio.src !== "about:blank") {
-        void executePlay();
+        void safePlay();
       }
     } else {
-      audio.pause();
+      void safePause();
     }
 
     // MediaSession API Sync for lock-screen & mobile media controls
@@ -1670,7 +1706,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         // Ignore unsupported MediaSession attributes
       }
     }
-  }, [current, isPlaying, executePlay]);
+  }, [current, isPlaying, safePlay, safePause]);
 
   const seek = useCallback((seconds: number) => {
     if (!Number.isFinite(seconds)) return;
@@ -1955,8 +1991,27 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           }}
           onStalled={() => {
             setIsBuffering(true);
+            if (stallTimeoutRef.current) clearTimeout(stallTimeoutRef.current);
+            stallTimeoutRef.current = setTimeout(() => {
+              const audioEl = audioRef.current;
+              const activeSong = currentRef.current;
+              if (audioEl && activeSong && isPlaying && audioEl.readyState < 3) {
+                console.warn(`[Mevo Audio] Playback stalled on "${activeSong.title}". Re-attempting stream connection...`);
+                const resumeTime = audioEl.currentTime || trackListenedSecondsRef.current || 0;
+                audioEl.load();
+                audioEl.currentTime = resumeTime;
+                void safePlay();
+              }
+            }, 4000);
           }}
           onPlaying={() => {
+            if (stallTimeoutRef.current) {
+              clearTimeout(stallTimeoutRef.current);
+              stallTimeoutRef.current = null;
+            }
+            if (current?.id && streamRetryCountRef.current[current.id]) {
+              delete streamRetryCountRef.current[current.id];
+            }
             consecutiveSkipCountRef.current = 0;
             if (skipTimerRef.current) {
               clearTimeout(skipTimerRef.current);
@@ -1964,6 +2019,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             }
             setIsBuffering(false);
             setPlaying(true);
+            setPlaybackError(null);
             playbackEvents.emit("BUFFERING", { buffering: false });
           }}
           onCanPlay={() => {
@@ -1971,9 +2027,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           }}
           onError={(event) => {
             const failedSong = current;
-            setIsBuffering(false);
-            setPlaying(false);
-
             const audioEl = event.currentTarget;
             console.warn("[AUDIO ERROR]", {
               code: audioEl.error?.code,
@@ -1984,8 +2037,42 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               song: failedSong?.title,
             });
 
+            // Stream Failure / 502 Graceful Degradation: Attempt automatic retry with cache-busting
+            if (failedSong) {
+              const retries = streamRetryCountRef.current[failedSong.id] || 0;
+              if (retries < 2) {
+                streamRetryCountRef.current[failedSong.id] = retries + 1;
+                console.info(`[Mevo Audio] Stream interrupted for "${failedSong.title}". Retrying attempt ${retries + 1}/2...`);
+                setIsBuffering(true);
+                const resumeTime = audioEl.currentTime || trackListenedSecondsRef.current || 0;
+
+                if (streamRetryTimeoutRef.current) clearTimeout(streamRetryTimeoutRef.current);
+                streamRetryTimeoutRef.current = setTimeout(() => {
+                  if (audioRef.current && currentRef.current?.id === failedSong.id) {
+                    let freshSrc = failedSong.audio;
+                    if (!freshSrc || (!freshSrc.startsWith("http") && !freshSrc.startsWith("/"))) {
+                      const vid = extractYouTubeVideoId(failedSong.id);
+                      if (vid) freshSrc = getYouTubeStreamUrl(vid);
+                    }
+                    if (freshSrc) {
+                      const separator = freshSrc.includes("?") ? "&" : "?";
+                      const retrySrc = `${freshSrc}${separator}_retry=${retries + 1}&_t=${Date.now()}`;
+                      audioRef.current.src = retrySrc;
+                      audioRef.current.currentTime = resumeTime;
+                      audioRef.current.load();
+                      void safePlay();
+                    }
+                  }
+                }, 1000);
+                return;
+              }
+            }
+
+            setIsBuffering(false);
+            setPlaying(false);
+
             const message = failedSong?.title
-              ? `Couldn't play "${failedSong.title}". Tap to retry or select another track.`
+              ? `Couldn't stream "${failedSong.title}". Connection dropped. Tap to retry.`
               : "Audio source is currently unavailable.";
 
             setPlaybackError(message);
@@ -2021,10 +2108,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               // Replay current track from the beginning
               audioEl.currentTime = 0;
               setProgress(0);
-              audioEl.play().catch((err) => {
-                console.warn("Single track repeat play notice:", err);
-                void executePlay();
-              });
+              void safePlay();
               return; // PREVENT advancing to next track
             }
 

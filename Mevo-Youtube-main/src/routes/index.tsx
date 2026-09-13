@@ -53,12 +53,20 @@ function ResumeListeningSection() {
   const [lastPlayed, setLastPlayed] = useState(() => getLastPlayedTrack());
 
   useEffect(() => {
-    const update = () => setLastPlayed(getLastPlayedTrack());
+    let isMounted = true;
+    const update = () => {
+      queueMicrotask(() => {
+        if (isMounted) {
+          setLastPlayed(getLastPlayedTrack());
+        }
+      });
+    };
     const unsubs = [
       playbackEvents.on("SONG_CHANGE", update),
       playbackEvents.on("PLAY", update),
     ];
     return () => {
+      isMounted = false;
       for (const unsub of unsubs) unsub();
     };
   }, []);
@@ -204,11 +212,11 @@ export function Index() {
         };
       }
     },
-    staleTime: import.meta.env.DEV ? 0 : 1000 * 60 * 15,
-    gcTime: import.meta.env.DEV ? 0 : 1000 * 60 * 60,
-    refetchOnMount: import.meta.env.DEV ? "always" : false,
-    refetchOnWindowFocus: import.meta.env.DEV,
-    placeholderData: import.meta.env.DEV ? undefined : keepPreviousData,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   });
 
   const [heroLabel, setHeroLabel] = useState("Today's Pick");

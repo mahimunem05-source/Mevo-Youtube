@@ -140,8 +140,8 @@ function SectionDetailsPage() {
     queryKey: ["section-quick-picks-songs"],
     queryFn: () => fetchExpandedUserQuickPicks(1, 40),
     enabled: section.id === "quick-picks",
-    staleTime: import.meta.env.DEV ? 0 : 1000 * 60 * 5,
-    gcTime: import.meta.env.DEV ? 0 : 1000 * 60 * 60,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
   });
 
   const prevSectionIdRef = useRef(section.id);
@@ -190,8 +190,8 @@ function SectionDetailsPage() {
       return { songs: [], nextPageToken: null };
     },
     enabled: Boolean(sectionConfig && sectionConfig.source === "youtube"),
-    staleTime: import.meta.env.DEV ? 0 : 1000 * 60 * 15,
-    gcTime: import.meta.env.DEV ? 0 : 1000 * 60 * 60,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
   });
 
   useEffect(() => {
@@ -306,8 +306,8 @@ function SectionDetailsPage() {
       isMahiSelect ||
       (!sectionConfig && section.id !== "quick-picks") ||
       (sectionConfig?.source === "local" && section.id !== "quick-picks"),
-    staleTime: import.meta.env.DEV ? 0 : 1000 * 60 * 5,
-    gcTime: import.meta.env.DEV ? 0 : 1000 * 60 * 30,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
   });
 
   const databaseSongs = songsQuery.data ?? [];

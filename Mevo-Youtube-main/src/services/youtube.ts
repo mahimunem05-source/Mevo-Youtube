@@ -11,6 +11,7 @@ import {
   validateSectionEligibility,
   isPlayableTrack,
 } from "@/lib/youtube-discovery";
+import { getFromApiCache, setInApiCache, API_CACHE_TTL } from "@/services/apiCacheService";
 
 export interface YouTubeSearchResult {
   id: string;
@@ -1515,8 +1516,17 @@ export async function fetchYouTubeCategoryTracks(
   categoryTitle = "Category",
   options: { trending?: boolean } = {}
 ): Promise<Song[]> {
-  const cacheKey = `category:${query.trim().toLowerCase()}:${order}:${targetCount}:${sectionId}`;
-  return fetchWithSingleFlight<Song[]>(cacheKey, async (): Promise<Song[]> => {
+  const normSection = (sectionId || "global").toLowerCase();
+  const persistentKey = `category:${normSection}`;
+  const memoryKey = `category:${normSection}:${order}:${targetCount}`;
+
+  return fetchWithSingleFlight<Song[]>(memoryKey, async (): Promise<Song[]> => {
+    // 1. Check persistent Supabase cache first
+    const persistent = await getFromApiCache<Song[]>(persistentKey);
+    if (persistent && Array.isArray(persistent) && persistent.length >= Math.ceil(targetCount * 0.8)) {
+      return persistent.slice(0, targetCount);
+    }
+
     const baseUrl = getExtractorBaseUrl();
     const collectedSongs: Song[] = [];
     const seenIds = new Set<string>();
@@ -1549,11 +1559,16 @@ export async function fetchYouTubeCategoryTracks(
 
     let pageToken: string | null = null;
     let pageCount = 0;
-    const maxPages = 6; // safety threshold to prevent uncontrolled request loop
+    const maxPages = 2; // Part A #1: Reduced from 6 to 2 to cap quota consumption
     const expansions = SECTION_QUERY_EXPANSIONS[sectionId] || SECTION_QUERY_EXPANSIONS[categoryTitle.toLowerCase()] || [];
     let expansionIndex = 0;
 
     while (collectedSongs.length < targetCount && pageCount < maxPages) {
+      // Part A #1: If collectedSongs.length is already within 20% of targetCount, stop early
+      if (collectedSongs.length >= Math.ceil(targetCount * 0.8)) {
+        break;
+      }
+
       pageCount++;
       const currentQuery = expansionIndex === 0 ? query : (expansions[expansionIndex] || query);
       const pageParam: string = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
@@ -1592,8 +1607,8 @@ export async function fetchYouTubeCategoryTracks(
         console.warn(`[fetchYouTubeCategoryTracks] Page ${pageCount} error for "${currentQuery}":`, err);
       }
 
-      // If category endpoint didn't supply enough, try fallback search endpoint
-      if (collectedSongs.length < targetCount && !gotNewCandidatesOnPage && !nextPageTokenFromResponse) {
+      // Part A #1: Skip /api/search fallback call entirely if /api/youtube/category call already returned zero new candidates
+      if (collectedSongs.length < targetCount && gotNewCandidatesOnPage && !nextPageTokenFromResponse) {
         try {
           const cleanQuery = currentQuery.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
           const fallbackEndpoint: string = `${baseUrl}/api/search?q=${encodeURIComponent(cleanQuery)}&limit=50&type=discovery&pool=discovery${pageParam}`;
@@ -1628,7 +1643,7 @@ export async function fetchYouTubeCategoryTracks(
         }
       }
 
-      if (collectedSongs.length >= targetCount) {
+      if (collectedSongs.length >= Math.ceil(targetCount * 0.8)) {
         break;
       }
 
@@ -1650,6 +1665,11 @@ export async function fetchYouTubeCategoryTracks(
     const ranked = filterAndRankSectionTracks(collectedSongs, sectionId);
     const deduped = deduplicateYouTubeTracks(ranked);
 
+    // Part B: Persist into Supabase api_cache with 20h TTL
+    if (deduped.length > 0) {
+      void setInApiCache(persistentKey, "category", deduped, 20 * 3600);
+    }
+
     return deduped.slice(0, targetCount);
   });
 }
@@ -1669,13 +1689,20 @@ export async function searchYouTubePaginated(
   pageToken?: string | null,
   pool: "discovery" | "search" = "search"
 ): Promise<PaginatedYouTubeSearchResults> {
-  const trimmed = query.trim();
+  const trimmed = query.trim().replace(/\s+/g, " ");
   if (!trimmed) {
     return { items: [], nextPageToken: null, count: 0 };
   }
 
+  const persistentKey = `search:${trimmed.toLowerCase()}:${maxResults}:${pageToken || "0"}`;
   const cacheKey = `search-paginated:${pool}:${trimmed.toLowerCase()}:${maxResults}:${pageToken || "0"}`;
   return fetchWithSingleFlight(cacheKey, async () => {
+    // 1. Check persistent Supabase cache first
+    const persistent = await getFromApiCache<PaginatedYouTubeSearchResults>(persistentKey);
+    if (persistent && Array.isArray(persistent.items) && persistent.items.length > 0) {
+      return persistent;
+    }
+
     try {
       const baseUrl = getExtractorBaseUrl();
       const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
@@ -1703,11 +1730,18 @@ export async function searchYouTubePaginated(
           .sort((a: YouTubeSearchResult, b: YouTubeSearchResult) => getOfficialContentScore(b.channel, b.title) - getOfficialContentScore(a.channel, a.title));
 
         const deduped = deduplicateYouTubeTracks(results).slice(0, maxResults);
-        return {
+        const searchResult: PaginatedYouTubeSearchResults = {
           items: deduped,
           nextPageToken: data.nextPageToken || null,
           count: deduped.length,
         };
+
+        // Write through to Supabase api_cache with 20h TTL
+        if (deduped.length > 0) {
+          void setInApiCache(persistentKey, "search", searchResult, 20 * 3600);
+        }
+
+        return searchResult;
       }
     } catch (err) {
       console.error("[searchYouTubePaginated] Backend search error:", err);

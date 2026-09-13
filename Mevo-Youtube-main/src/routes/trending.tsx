@@ -63,25 +63,25 @@ function TrendingPage() {
   const ytTrendingQuery = useQuery({
     queryKey: ["trending-youtube-chart"],
     queryFn: () => fetchYouTubeTrending("BD", 50, "bangla", "MEVO Pulse"),
-    staleTime: import.meta.env.DEV ? 0 : 1000 * 60 * 15,
-    gcTime: import.meta.env.DEV ? 0 : 1000 * 60 * 60,
-    placeholderData: import.meta.env.DEV ? undefined : keepPreviousData,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
+    placeholderData: keepPreviousData,
   });
 
   const trendingQuery = useQuery({
     queryKey: ["homepage-trending"],
     queryFn: getTrendingSongs,
-    staleTime: import.meta.env.DEV ? 0 : 1000 * 60 * 15,
-    gcTime: import.meta.env.DEV ? 0 : 1000 * 60 * 60,
-    placeholderData: import.meta.env.DEV ? undefined : keepPreviousData,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
+    placeholderData: keepPreviousData,
   });
 
   const songsQuery = useQuery({
     queryKey: ["homepage-songs"],
     queryFn: getSongs,
-    staleTime: import.meta.env.DEV ? 0 : 1000 * 60 * 15,
-    gcTime: import.meta.env.DEV ? 0 : 1000 * 60 * 60,
-    placeholderData: import.meta.env.DEV ? undefined : keepPreviousData,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
+    placeholderData: keepPreviousData,
   });
 
   const ytTrending = ytTrendingQuery.data ?? [];

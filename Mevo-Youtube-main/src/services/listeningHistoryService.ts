@@ -3,10 +3,11 @@ import type { Song } from "@/data/songs";
 
 export interface ListeningHistoryRecord {
   id?: string;
-  user_id?: string;
+  user_id?: string | null;
   song_id: string;
   played_at: string;
-  play_duration: number;
+  listened_at?: string;
+  play_duration?: number;
   completed: boolean;
 }
 
@@ -166,13 +167,15 @@ export async function recordPlay(songId: string, duration = 0, completed = false
   // Async insert into Supabase listening_history table if available
   try {
     const { data: userData } = await supabase.auth.getUser();
-    const userId = userData?.user?.id || "anonymous-user";
+    const rawUserId = userData?.user?.id;
+    const isUuid = typeof rawUserId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawUserId);
+    const userId = isUuid ? rawUserId : null;
 
     await supabase.from("listening_history").insert({
       user_id: userId,
       song_id: songId,
       played_at: now,
-      play_duration: duration,
+      listened_at: now,
       completed,
     });
   } catch {

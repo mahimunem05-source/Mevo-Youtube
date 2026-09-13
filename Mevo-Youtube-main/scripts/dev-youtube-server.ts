@@ -1,6 +1,7 @@
 import type { Plugin, ViteDevServer } from "vite";
 import fs from "node:fs";
 import path from "node:path";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { parseLrc, alignPlainLyrics, processLyricsLines, cleanSongTitle } from "../src/services/lyricsService.ts";
 import { getDirectAudioStreamUrl } from "./youtube-solver.ts";
 
@@ -30,11 +31,101 @@ class MemoryCache {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Supabase Persistent Cache Helper for Dev Server (Survives restarts & HMR)
+// ---------------------------------------------------------------------------
+let devSupabaseClient: SupabaseClient | null = null;
+function getDevSupabase(): SupabaseClient | null {
+  if (devSupabaseClient) return devSupabaseClient;
+  try {
+    const envPath = path.resolve(process.cwd(), ".env.local");
+    let supabaseUrl = process.env.VITE_SUPABASE_URL;
+    let supabaseKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if ((!supabaseUrl || !supabaseKey) && fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, "utf-8");
+      const urlMatch = content.match(/VITE_SUPABASE_URL=["']?([^"'\r\n]+)/);
+      const keyMatch = content.match(/(?:VITE_SUPABASE_PUBLISHABLE_KEY|SUPABASE_SERVICE_ROLE_KEY)=["']?([^"'\r\n]+)/);
+      if (urlMatch && urlMatch[1]) supabaseUrl = urlMatch[1].trim();
+      if (keyMatch && keyMatch[1]) supabaseKey = keyMatch[1].trim();
+    }
+
+    if (supabaseUrl && supabaseKey) {
+      devSupabaseClient = createClient(supabaseUrl, supabaseKey);
+    }
+  } catch {
+    // ignore
+  }
+  return devSupabaseClient;
+}
+
+async function getDevSupabaseCache<T>(cacheKey: string): Promise<T | null> {
+  const sb = getDevSupabase();
+  if (!sb) return null;
+  try {
+    const nowIso = new Date().toISOString();
+    const { data, error } = await sb
+      .from("api_cache")
+      .select("data, expires_at")
+      .eq("cache_key", cacheKey)
+      .gt("expires_at", nowIso)
+      .maybeSingle();
+
+    if (error || !data) return null;
+    return data.data as T;
+  } catch {
+    return null;
+  }
+}
+
+async function setDevSupabaseCache<T>(
+  cacheKey: string,
+  cacheType: string,
+  data: T,
+  ttlSeconds: number
+): Promise<void> {
+  const sb = getDevSupabase();
+  if (!sb || data === undefined || data === null) return;
+  try {
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+    await sb.from("api_cache").upsert(
+      {
+        cache_key: cacheKey,
+        cache_type: cacheType,
+        data: data as any,
+        expires_at: expiresAt,
+      },
+      { onConflict: "cache_key" }
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Calculates milliseconds remaining until next midnight Pacific Time (PST/PDT),
+ * precisely matching YouTube's actual daily quota reset schedule.
+ */
+function getMsUntilNextMidnightPT(fromTime = Date.now()): number {
+  try {
+    const now = new Date(fromTime);
+    const ptString = now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
+    const ptDate = new Date(ptString);
+    const nextMidnightPt = new Date(ptDate);
+    nextMidnightPt.setDate(nextMidnightPt.getDate() + 1);
+    nextMidnightPt.setHours(0, 0, 0, 0);
+    const diff = nextMidnightPt.getTime() - ptDate.getTime();
+    return Math.max(60 * 1000, diff);
+  } catch {
+    return 8 * 3600 * 1000;
+  }
+}
+
 class SingleKeyPool {
   readonly name: string;
   private keys: string[] = [];
   private currentIdx = 0;
-  private exhausted = new Map<string, number>();
+  private exhaustedUntil = new Map<string, number>();
 
   constructor(name: string, keys: string[] = []) {
     this.name = name;
@@ -52,8 +143,8 @@ class SingleKeyPool {
     for (let i = 0; i < this.keys.length; i++) {
       const idx = (this.currentIdx + i) % this.keys.length;
       const key = this.keys[idx];
-      const exhaustedTime = this.exhausted.get(key);
-      if (exhaustedTime && now - exhaustedTime < 3600 * 1000) {
+      const resetTime = this.exhaustedUntil.get(key);
+      if (resetTime && now < resetTime) {
         continue;
       }
       this.currentIdx = idx;
@@ -63,27 +154,30 @@ class SingleKeyPool {
   }
 
   markExhausted(key: string, reason = "Quota Exceeded") {
-    this.exhausted.set(key, Date.now());
+    // Part A #4: Reset cooldown at midnight Pacific Time, matching YouTube's actual daily reset
+    const resetTime = Date.now() + getMsUntilNextMidnightPT();
+    this.exhaustedUntil.set(key, resetTime);
     this.currentIdx = (this.currentIdx + 1) % Math.max(1, this.keys.length);
     const activeRemaining = this.getActiveKeyCount();
+    const hoursRemaining = ((resetTime - Date.now()) / (3600 * 1000)).toFixed(1);
     console.warn(
-      `[Vite Dev YouTube][${this.name} Pool] Key ${key.slice(0, 8)}... marked EXHAUSTED (${reason}). Active remaining: ${activeRemaining}/${this.keys.length}`
+      `[Vite Dev YouTube][${this.name} Pool] Key ${key.slice(0, 8)}... marked EXHAUSTED (${reason}). Resets in ${hoursRemaining}h (Midnight PT). Active remaining: ${activeRemaining}/${this.keys.length}`
     );
   }
 
   getActiveKeyCount(): number {
     const now = Date.now();
     return this.keys.filter((k) => {
-      const exp = this.exhausted.get(k);
-      return !exp || now - exp >= 3600 * 1000;
+      const resetTime = this.exhaustedUntil.get(k);
+      return !resetTime || now >= resetTime;
     }).length;
   }
 
   getStatus() {
     const now = Date.now();
     const active = this.keys.filter((k) => {
-      const exp = this.exhausted.get(k);
-      return !exp || now - exp >= 3600 * 1000;
+      const resetTime = this.exhaustedUntil.get(k);
+      return !resetTime || now >= resetTime;
     });
     return {
       name: this.name,
@@ -397,50 +491,18 @@ export function devYouTubePlugin(): Plugin {
       }
     }
 
-    // 2. Emergency fallback: If all keys in primary pool are exhausted, borrow from the other pool
-    const fallbackTotal = Math.max(1, fallbackPool.getStatus().total_keys);
-    for (let attempt = 0; attempt < fallbackTotal; attempt++) {
-      const key = fallbackPool.getActiveKey();
-      if (!key) break;
-      try {
-        console.warn(
-          `[Vite Dev YouTube] Primary ${primaryPool.name} pool keys exhausted. Borrowing active key ${key.slice(0, 8)}... from ${fallbackPool.name} pool.`
-        );
-        const url = urlBuilder(key);
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.error) {
-          const code = data.error.code;
-          const msg = (data.error.message || "").toLowerCase();
-          const status = data.error.status || "";
-          if (
-            code === 403 ||
-            code === 429 ||
-            status === "RESOURCE_EXHAUSTED" ||
-            msg.includes("quota") ||
-            msg.includes("exceeded")
-          ) {
-            fallbackPool.markExhausted(key, `HTTP ${code}: ${data.error.message}`);
-            continue;
-          }
-          throw new Error(data.error.message || `YouTube API error ${code}`);
-        }
-        return data;
-      } catch (err: any) {
-        if (
-          err.message &&
-          (err.message.includes("quota") ||
-            err.message.includes("exceeded") ||
-            err.message.includes("RESOURCE_EXHAUSTED"))
-        ) {
-          continue;
-        }
-        throw err;
-      }
+    // Part A #3: Fix cross-pool contamination
+    // Stop the Discovery pool from borrowing/exhausting Search pool keys as a fallback.
+    // If Discovery pool keys are exhausted, discovery requests fail gracefully instead of falling back to Search pool keys.
+    // Search pool keys stay strictly reserved for live user search only.
+    if (poolName === "discovery") {
+      throw new Error(
+        `[Song Discovery Pool] All Song Discovery YouTube API keys are exhausted. Search pool keys remain strictly reserved for live user search.`
+      );
     }
 
     throw new Error(
-      `[${primaryPool.name} Pool] All YouTube API keys (including failover pool) are exhausted or unavailable`
+      `[${primaryPool.name} Pool] All YouTube API keys are exhausted or unavailable`
     );
   }
 
@@ -522,6 +584,15 @@ export function devYouTubePlugin(): Plugin {
             return;
           }
 
+          const sbCached = await getDevSupabaseCache<any>(cacheKey);
+          if (sbCached) {
+            cache.set(cacheKey, sbCached, 72000);
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify(sbCached));
+            return;
+          }
+
           try {
             const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
             const data = await fetchWithKey(
@@ -569,7 +640,8 @@ export function devYouTubePlugin(): Plugin {
               .sort((a: any, b: any) => calculateScore(b) - calculateScore(a));
 
             const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api" };
-            cache.set(cacheKey, result, 1200); // 20 min TTL
+            cache.set(cacheKey, result, 72000); // 20 hours TTL
+            await setDevSupabaseCache(cacheKey, "category", result, 72000);
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(result));
@@ -596,6 +668,15 @@ export function devYouTubePlugin(): Plugin {
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(cached));
+            return;
+          }
+
+          const sbCached = await getDevSupabaseCache<any>(cacheKey);
+          if (sbCached) {
+            cache.set(cacheKey, sbCached, 72000);
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify(sbCached));
             return;
           }
 
@@ -653,7 +734,8 @@ export function devYouTubePlugin(): Plugin {
               .sort((a: any, b: any) => calculateScore(b) - calculateScore(a));
 
             const result = { songs, nextPageToken: data.nextPageToken || null, count: songs.length };
-            cache.set(cacheKey, result, 1800); // 30 min TTL
+            cache.set(cacheKey, result, 72000); // 20 hours TTL
+            await setDevSupabaseCache(cacheKey, "category", result, 72000);
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(result));
@@ -728,6 +810,15 @@ export function devYouTubePlugin(): Plugin {
             return;
           }
 
+          const sbCached = await getDevSupabaseCache<any>(cacheKey);
+          if (sbCached) {
+            cache.set(cacheKey, sbCached, 72000);
+            res.setHeader("Content-Type", "application/json");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.end(JSON.stringify(sbCached));
+            return;
+          }
+
           try {
             const pageParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
             const searchLimit = Math.min(50, Math.max(limit * 2, 25));
@@ -783,7 +874,8 @@ export function devYouTubePlugin(): Plugin {
               .slice(0, limit);
 
             const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api", query, pool: targetPool };
-            cache.set(cacheKey, result, 7200); // 2 hour TTL
+            cache.set(cacheKey, result, 72000); // 20 hour TTL
+            await setDevSupabaseCache(cacheKey, "search", result, 72000);
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(result));
@@ -845,15 +937,50 @@ export function devYouTubePlugin(): Plugin {
           }
 
           try {
-            const detailsMap = await getVideoDetails([vidId], "discovery");
-            const details = detailsMap.get(vidId);
+            const detailsCacheKey = `video:${vidId}`;
+            let details = cache.get<any>(detailsCacheKey);
+            if (!details) {
+              details = await getDevSupabaseCache<any>(detailsCacheKey);
+              if (details) {
+                cache.set(detailsCacheKey, details, 72000);
+              }
+            }
+
+            if (!details) {
+              const detailsMap = await getVideoDetails([vidId], "discovery");
+              details = detailsMap.get(vidId);
+              if (details) {
+                cache.set(detailsCacheKey, details, 72000);
+                await setDevSupabaseCache(detailsCacheKey, "video_details", details, 72000);
+              }
+            }
 
             const streamCacheKey = `stream:${vidId}`;
             let audioUrl = cache.get<string>(streamCacheKey);
             if (!audioUrl) {
+              audioUrl = await getDevSupabaseCache<string>(streamCacheKey);
+              if (audioUrl) {
+                cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
+              }
+            }
+
+            if (!audioUrl) {
               audioUrl = await getDirectAudioUrl(vidId);
               if (audioUrl) {
-                cache.set(streamCacheKey, audioUrl, 10800);
+                try {
+                  const testRes = await fetch(audioUrl, {
+                    headers: {
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                      "Range": "bytes=0-1024",
+                    },
+                  });
+                  if (testRes.status === 200 || testRes.status === 206) {
+                    cache.set(streamCacheKey, audioUrl, 14400);
+                    await setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400);
+                  }
+                } catch {
+                  // Do not cache unverified URLs
+                }
               }
             }
 
@@ -936,12 +1063,16 @@ export function devYouTubePlugin(): Plugin {
 
           const streamCacheKey = `stream:${vidId}`;
           let audioUrl = cache.get<string>(streamCacheKey);
+          if (!audioUrl) {
+            audioUrl = await getDevSupabaseCache<string>(streamCacheKey);
+            if (audioUrl) {
+              cache.set(streamCacheKey, audioUrl, 14400);
+            }
+          }
 
           if (!audioUrl) {
             audioUrl = await getDirectAudioUrl(vidId);
-            if (audioUrl) {
-              cache.set(streamCacheKey, audioUrl, 10800); // 3-hour TTL
-            }
+            // Notice: Only cache once upstream response is verified 200 or 206 below!
           }
 
           // YouTube's googlevideo CDN returns 403 Forbidden on open-ended ranges (e.g. bytes=0-) or un-ranged requests.
@@ -954,7 +1085,8 @@ export function devYouTubePlugin(): Plugin {
             const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
             if (match) {
               const start = parseInt(match[1], 10) || 0;
-              const clientEnd = match[2] ? parseInt(match[2], 10) : null;
+              const parsedEnd = match[2] ? parseInt(match[2], 10) : NaN;
+              const clientEnd = !Number.isNaN(parsedEnd) ? parsedEnd : null;
               const end = clientEnd !== null ? Math.min(clientEnd, start + chunkSize - 1) : start + chunkSize - 1;
               upstreamRange = `bytes=${start}-${end}`;
             } else {
@@ -978,6 +1110,11 @@ export function devYouTubePlugin(): Plugin {
               upstreamRes = await fetch(audioUrl, {
                 headers: upstreamHeaders,
               });
+              // PART A #5: If verified playable (200 or 206), persist to cache
+              if (upstreamRes.status === 200 || upstreamRes.status === 206) {
+                cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
+                setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+              }
             } catch (fetchErr: any) {
               console.warn(`[Vite Dev YouTube] Upstream initial fetch error for ${vidId}:`, fetchErr.message);
             }
@@ -988,14 +1125,25 @@ export function devYouTubePlugin(): Plugin {
             console.warn(
               `[Vite Dev YouTube] Upstream returned ${upstreamRes ? upstreamRes.status : "error"} for ${vidId}. Invalidating cache and re-deciphering fresh signature...`
             );
-            cache.set(streamCacheKey, null, 0);
+            cache.set(streamCacheKey, null as any, 0);
+            const sb = getDevSupabase();
+            if (sb) {
+              Promise.resolve(sb.from("api_cache").delete().eq("cache_key", streamCacheKey)).catch(() => {});
+            }
+
             audioUrl = await getDirectAudioUrl(vidId, true);
             if (audioUrl) {
-              cache.set(streamCacheKey, audioUrl, 10800);
               try {
                 upstreamRes = await fetch(audioUrl, {
                   headers: upstreamHeaders,
                 });
+                // PART A #5: Only cache if verified status 200 or 206! Never cache 403 or broken URLs.
+                if (upstreamRes && (upstreamRes.status === 200 || upstreamRes.status === 206)) {
+                  cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
+                  setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+                } else {
+                  console.warn(`[Vite Dev YouTube] Refusing to cache stream URL for ${vidId}: upstream status is ${upstreamRes?.status}`);
+                }
               } catch (retryErr: any) {
                 console.warn(`[Vite Dev YouTube] Upstream retry fetch error for ${vidId}:`, retryErr.message);
               }
@@ -1050,13 +1198,17 @@ export function devYouTubePlugin(): Plugin {
                 while (!isClosed) {
                   const { done, value } = await reader.read();
                   if (done || isClosed) break;
-                  res.write(Buffer.from(value));
+                  if (!res.destroyed && !res.writableEnded) {
+                    res.write(Buffer.from(value));
+                  }
                 }
               } catch {
                 // Client closed stream connection
               } finally {
-                if (!res.writableEnded) {
-                  res.end();
+                if (!res.writableEnded && !res.destroyed) {
+                  try {
+                    res.end();
+                  } catch {}
                 }
               }
               return;
