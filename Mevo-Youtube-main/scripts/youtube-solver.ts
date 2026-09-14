@@ -368,14 +368,15 @@ function solveChallenges(input: any) {
   return { type: "result", responses };
 }
 
-let lastKnownJsUrl = "https://www.youtube.com/s/player/230f3689/player_ias.vflset/en_US/base.js";
+let lastKnownJsUrl = "https://www.youtube.com/s/player/8c3fda2d/player-plasma-es6-bn_BD.vflset/base.js";
 
 function findJsUrl(html: string): string | null {
   if (!html) return null;
   const match =
     html.match(/"jsUrl":"([^"]+base\.js)"/) ||
     html.match(/src="([^"]*\/base\.js)"/) ||
-    html.match(/\/s\/player\/[a-zA-Z0-9_-]+\/player_ias\.vflset\/[^"]*\/base\.js/);
+    html.match(/\/s\/player\/[a-zA-Z0-9_-]+\/(?:player_ias|player_es6|player-plasma-es6[a-zA-Z0-9_-]*)\.vflset\/[^"']+\/base\.js/) ||
+    html.match(/\/s\/player\/[a-zA-Z0-9_-]+\/[^"']+\/base\.js/);
   if (!match) return null;
   const raw = match[1] || match[0];
   return raw.startsWith("http") ? raw : "https://www.youtube.com" + raw;
@@ -485,15 +486,55 @@ function dHtmlMatch(html: string) {
 /**
  * Extracts a high-quality playable audio stream URL for a given YouTube Video ID.
  */
-export async function getDirectAudioStreamUrl(videoId: string, bypassCache = false): Promise<string | null> {
+/**
+ * Verifies that a stream URL is actually capable of continuous playback across multiple Range requests,
+ * specifically testing continuation beyond the 1MB buffer where YouTube restricts unauthenticated DASH streams.
+ */
+export async function verifyStreamContinuouslyPlayable(url: string): Promise<boolean> {
+  try {
+    // 1. Initial range probe: verify that stream starts cleanly
+    const res1 = await fetch(url, {
+      headers: { Range: "bytes=0-1024" },
+      signal: AbortSignal.timeout(3500),
+    });
+
+    if (res1.status !== 200 && res1.status !== 206) {
+      return false;
+    }
+
+    // Determine total content length from Content-Range header (e.g., bytes 0-1024/5242880)
+    const cr = res1.headers.get("content-range") || "";
+    const totalMatch = cr.match(/\/(\d+)$/);
+    const totalSize = totalMatch ? parseInt(totalMatch[1], 10) : 0;
+
+    // 2. Continuation probe: verify that stream can continue beyond the first 1MB buffer
+    // without triggering YouTube's SABR / PO-Token 403 Forbidden.
+    // If the file is smaller than 1MB (e.g. short audio clip), probe near the midpoint.
+    let continuationRange = "bytes=1048576-1052671";
+    if (totalSize > 0 && totalSize <= 1048576) {
+      const mid = Math.floor(totalSize / 2);
+      continuationRange = `bytes=${mid}-${Math.min(mid + 1024, totalSize - 1)}`;
+    }
+
+    const res2 = await fetch(url, {
+      headers: { Range: continuationRange },
+      signal: AbortSignal.timeout(3500),
+    });
+
+    return res2.status === 206;
+  } catch {
+    return false;
+  }
+}
+
+export async function getDirectAudioStreamUrl(
+  videoId: string,
+  bypassCache = false
+): Promise<string | null> {
   const cleanId = videoId.replace(/^yt-/, "").trim();
   if (!cleanId) return null;
 
-  if (bypassCache) {
-    streamCache.delete(cleanId);
-    playerCache.clear();
-  } else {
-    // Check in-memory stream cache
+  if (!bypassCache) {
     const cached = streamCache.get(cleanId);
     if (cached && Date.now() < cached.expiresAt) {
       return cached.url;
@@ -532,33 +573,41 @@ export async function getDirectAudioStreamUrl(videoId: string, bypassCache = fal
       return null;
     }
 
-    // Sort to prioritize:
-    // 1. Dedicated audio: itag 140 (AAC 128k), then itag 251 (Opus 160k), 250, 249, other audio by bitrate
-    // 2. Progressive formats: itag 18, 22 (contain stereo AAC audio tracks playable by HTMLAudioElement)
-    // 3. Other formats by bitrate
+    // Rank candidates dynamically:
+    // 1. Progressive MP4 formats (itag 18, 22) containing complete stereo AAC audio tracks
+    //    are preferred when available and verified, because they are immune to YouTube's 1MB SABR/PO-Token cutoff.
+    // 2. High-quality dedicated audio formats (itag 140 AAC 128k, itag 251 Opus 160k, itag 250, 249, 139)
+    // 3. Other formats containing audio
+    // 4. Fallback order by bitrate
     candidates.sort((a: any, b: any) => {
-      const aAudio = Boolean(a.mimeType?.includes("audio"));
-      const bAudio = Boolean(b.mimeType?.includes("audio"));
-      if (aAudio && !bAudio) return -1;
-      if (!aAudio && bAudio) return 1;
-
-      if (a.itag === 140) return -1;
-      if (b.itag === 140) return 1;
-
-      if (a.itag === 251) return -1;
-      if (b.itag === 251) return 1;
-
       const aProg = Boolean(a.mimeType?.includes("video/mp4") && (a.itag === 18 || a.itag === 22));
       const bProg = Boolean(b.mimeType?.includes("video/mp4") && (b.itag === 18 || b.itag === 22));
       if (aProg && !bProg) return -1;
       if (!aProg && bProg) return 1;
 
+      const aAudio = Boolean(a.mimeType?.includes("audio"));
+      const bAudio = Boolean(b.mimeType?.includes("audio"));
+      if (aAudio && !bAudio) return -1;
+      if (!aAudio && bAudio) return 1;
+
+      if (a.itag === 18) return -1;
+      if (b.itag === 18) return 1;
+
+      if (a.itag === 22) return -1;
+      if (b.itag === 22) return 1;
+
+      if (a.itag === 140) return -1;
+      if (b.itag === 140) return 1;
+
       return (b.bitrate || 0) - (a.bitrate || 0);
     });
 
-    // Attempt candidates in priority order until a valid playable direct stream is obtained
+    // Dynamically iterate through candidates, resolving decipher/n-challenges and testing
+    // continuous playability (>1MB range) before accepting or caching any format.
     for (const format of candidates) {
       try {
+        let candidateUrl: string | null = null;
+
         // Direct URL format
         if (format.url) {
           const urlObj = new URL(format.url);
@@ -577,61 +626,68 @@ export async function getDirectAudioStreamUrl(videoId: string, bypassCache = fal
               }
             }
           }
-          const finalUrl = urlObj.toString();
+          candidateUrl = urlObj.toString();
+        } else {
+          // Signature cipher format
+          const cipher = format.signatureCipher || format.cipher;
+          if (!cipher) continue;
+
+          const params = new URLSearchParams(cipher);
+          const s = params.get("s");
+          const sp = params.get("sp") || "sig";
+          const rawUrl = params.get("url");
+          if (!rawUrl || !s) continue;
+
+          const urlObj = new URL(rawUrl);
+          const n = urlObj.searchParams.get("n");
+
+          const preprocessed = await getPreprocessedPlayer(lastKnownJsUrl);
+          if (!preprocessed) continue;
+
+          const requests: any[] = [{ type: "sig", challenges: [s] }];
+          if (n) {
+            requests.push({ type: "n", challenges: [n] });
+          }
+
+          const solution = solveChallenges({
+            type: "preprocessed",
+            preprocessed_player: preprocessed,
+            requests,
+          });
+
+          const decipheredS = solution.responses[0]?.data?.[s];
+          if (!decipheredS) {
+            continue;
+          }
+
+          urlObj.searchParams.set(sp, decipheredS);
+
+          if (n) {
+            const solvedN = solution.responses[1]?.data?.[n];
+            if (solvedN) {
+              urlObj.searchParams.set("n", solvedN);
+            }
+          }
+
+          candidateUrl = urlObj.toString();
+        }
+
+        if (!candidateUrl) continue;
+
+        // Verify continuous playability beyond 1MB before treating as healthy/cacheable
+        const isPlayable = await verifyStreamContinuouslyPlayable(candidateUrl);
+        if (isPlayable) {
           streamCache.set(cleanId, {
-            url: finalUrl,
+            url: candidateUrl,
             expiresAt: Date.now() + 3 * 3600 * 1000,
           });
-          return finalUrl;
-        }
-
-        // Signature cipher format
-        const cipher = format.signatureCipher || format.cipher;
-        if (!cipher) continue;
-
-        const params = new URLSearchParams(cipher);
-        const s = params.get("s");
-        const sp = params.get("sp") || "sig";
-        const rawUrl = params.get("url");
-        if (!rawUrl || !s) continue;
-
-        const urlObj = new URL(rawUrl);
-        const n = urlObj.searchParams.get("n");
-
-        const preprocessed = await getPreprocessedPlayer(lastKnownJsUrl);
-        if (!preprocessed) continue;
-
-        const requests: any[] = [{ type: "sig", challenges: [s] }];
-        if (n) {
-          requests.push({ type: "n", challenges: [n] });
-        }
-
-        const solution = solveChallenges({
-          type: "preprocessed",
-          preprocessed_player: preprocessed,
-          requests,
-        });
-
-        const decipheredS = solution.responses[0]?.data?.[s];
-        if (!decipheredS) {
+          return candidateUrl;
+        } else {
+          console.warn(
+            `[YouTube Solver] Candidate itag ${format.itag} for ${cleanId} failed continuous playability (>1MB range), trying next candidate...`
+          );
           continue;
         }
-
-        urlObj.searchParams.set(sp, decipheredS);
-
-        if (n) {
-          const solvedN = solution.responses[1]?.data?.[n];
-          if (solvedN) {
-            urlObj.searchParams.set("n", solvedN);
-          }
-        }
-
-        const finalUrl = urlObj.toString();
-        streamCache.set(cleanId, {
-          url: finalUrl,
-          expiresAt: Date.now() + 3 * 3600 * 1000,
-        });
-        return finalUrl;
       } catch (candidateErr: any) {
         console.warn(`[YouTube Solver] itag ${format.itag} resolution notice:`, candidateErr.message);
         continue;

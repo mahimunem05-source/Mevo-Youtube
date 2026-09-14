@@ -141,7 +141,7 @@ export const sections: Section[] = [
     id: "global",
     slug: "global-tracks",
     title: "Sonic World",
-    subtitle: "Ambient, Lofi, EDM & Atmospheric Classics.",
+    subtitle: "International Hits, Latin, K-Pop, French & Global Sounds.",
     variant: "default",
   },
   {

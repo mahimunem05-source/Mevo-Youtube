@@ -29,7 +29,8 @@ import { formatTime, type Song } from "@/data/songs";
 import { cn } from "@/lib/utils";
 import { SongCoverImage } from "@/components/music/song-cover-image";
 
-import { fetchYouTubeTrending } from "@/services/youtube";
+import { fetchYouTubeTrending, fetchCuratedBengaliTrending } from "@/services/youtube";
+import { isBengaliTrack, isCuratedStudioBengaliTrack } from "@/lib/youtube-discovery";
 
 export const Route = createFileRoute("/trending")({
   head: () => ({
@@ -49,9 +50,9 @@ export const Route = createFileRoute("/trending")({
   component: TrendingPage,
 });
 
-type FilterType = "Top 10" | "Weekly Trending" | "New Releases" | "Most Played";
+type FilterType = "Top 10" | "Weekly Trending" | "Bengali Trending" | "New Releases" | "Most Played";
 
-const FILTER_CHIPS: FilterType[] = ["Top 10", "Weekly Trending", "New Releases", "Most Played"];
+const FILTER_CHIPS: FilterType[] = ["Top 10", "Weekly Trending", "Bengali Trending", "New Releases", "Most Played"];
 
 function TrendingPage() {
   const player = usePlayer();
@@ -61,8 +62,16 @@ function TrendingPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const ytTrendingQuery = useQuery({
-    queryKey: ["trending-youtube-chart"],
-    queryFn: () => fetchYouTubeTrending("BD", 50, "bangla", "MEVO Pulse"),
+    queryKey: ["trending-youtube-global"],
+    queryFn: () => fetchYouTubeTrending("US", 50, "global", "MEVO Pulse"),
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
+    placeholderData: keepPreviousData,
+  });
+
+  const bengaliTrendingQuery = useQuery({
+    queryKey: ["trending-bengali-curated"],
+    queryFn: () => fetchCuratedBengaliTrending(50),
     staleTime: 1000 * 60 * 15,
     gcTime: 1000 * 60 * 60,
     placeholderData: keepPreviousData,
@@ -87,7 +96,11 @@ function TrendingPage() {
   const ytTrending = ytTrendingQuery.data ?? [];
   const databaseTrending = trendingQuery.data ?? [];
   const allCatalogue = songsQuery.data ?? [];
-  const isLoading = (ytTrendingQuery.isLoading || trendingQuery.isLoading) && ytTrending.length === 0 && databaseTrending.length === 0;
+  const isLoading =
+    (ytTrendingQuery.isLoading || trendingQuery.isLoading) &&
+    ytTrending.length === 0 &&
+    databaseTrending.length === 0 &&
+    (activeFilter !== "Bengali Trending" || bengaliTrendingQuery.isLoading);
   const loadError =
     ytTrendingQuery.error instanceof Error
       ? ytTrendingQuery.error.message
@@ -116,14 +129,38 @@ function TrendingPage() {
   }, [queryClient]);
 
   const trendingList = useMemo(() => {
+    // 1. Curated Bengali Trending Tab on "See All" Expanded Pulse Page
+    if (activeFilter === "Bengali Trending") {
+      const bengaliData = bengaliTrendingQuery.data ?? [];
+      const curatedBengali = bengaliData.filter((song) =>
+        isCuratedStudioBengaliTrack({
+          title: song.title,
+          artist: song.artist,
+          duration: song.duration,
+          description: (song as any).description || "",
+        })
+      );
+      if (curatedBengali.length > 0) return curatedBengali;
+      return allCatalogue
+        .map((s) => databaseSongToPlayerSong(s))
+        .filter((s) => isBengaliTrack(s));
+    }
+
+    // 2. Global / English / International Trending Tabs:
+    // Strictly exclude Bengali songs from the global trending feed
+    const globalYt = ytTrending.filter((s) => !isBengaliTrack(s));
     let rawList: Song[] = [];
 
-    if (ytTrending.length > 0) {
-      rawList = ytTrending;
+    if (globalYt.length > 0) {
+      rawList = globalYt;
     } else if (databaseTrending.length > 0) {
-      rawList = databaseTrending.map((song) => databaseSongToPlayerSong(song, { trending: true }));
+      rawList = databaseTrending
+        .map((song) => databaseSongToPlayerSong(song, { trending: true }))
+        .filter((s) => !isBengaliTrack(s));
     } else {
-      rawList = allCatalogue.map((song) => databaseSongToPlayerSong(song));
+      rawList = allCatalogue
+        .map((song) => databaseSongToPlayerSong(song))
+        .filter((s) => !isBengaliTrack(s));
     }
 
     if (activeFilter === "Weekly Trending") {
@@ -138,7 +175,7 @@ function TrendingPage() {
 
     // Top 10 by default
     return rawList.slice(0, 10);
-  }, [ytTrending, databaseTrending, allCatalogue, activeFilter]);
+  }, [ytTrending, bengaliTrendingQuery.data, databaseTrending, allCatalogue, activeFilter]);
 
   const handleRowClick = (song: Song, index: number) => {
     const isCurrent = player.current?.id === song.id;

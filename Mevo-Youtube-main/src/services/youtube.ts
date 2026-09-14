@@ -8,8 +8,14 @@ import { getYouTubeStreamUrl, getExtractorBaseUrl } from "@/lib/extractor";
 import {
   filterAndRankSectionTracks,
   isShortsVideo,
+  isAcceptableCatalogTrack,
   validateSectionEligibility,
   isPlayableTrack,
+  isBengaliTrack,
+  isCuratedStudioBengaliTrack,
+  validateBengalEchoTrack,
+  validateEnglishEssenceTrack,
+  validateSonicWorldTrack,
 } from "@/lib/youtube-discovery";
 import { getFromApiCache, setInApiCache, API_CACHE_TTL } from "@/services/apiCacheService";
 
@@ -498,13 +504,18 @@ export function isMusicContent(
   const channelLower = channel.toLowerCase();
   const text = `${titleLower} ${channelLower} ${description.toLowerCase()}`;
 
-  // 1. Strict Duration Filter: Minimum 60 seconds (1 min) and Maximum 480 seconds (8 min)
-  if (durationSeconds > 0 && (durationSeconds < 55 || durationSeconds > 480)) {
+  // 1. Strict Duration Filter: Minimum 90 seconds (1.5 min) and Maximum 480 seconds (8 min)
+  if (durationSeconds > 0 && (durationSeconds < 90 || durationSeconds > 480)) {
     return false;
   }
 
   // 2. Shorts patterns & short-form video filter
   if (isShortsVideo(title, description, durationSeconds)) {
+    return false;
+  }
+
+  // 2b. Strict music catalog quality check (rejects spam, compilations, non-music, covers, etc.)
+  if (!isAcceptableCatalogTrack(title, channel, description, durationSeconds).acceptable) {
     return false;
   }
 
@@ -1295,97 +1306,217 @@ export async function fetchYouTubeVideoDetails(videoIds: string[]): Promise<Map<
   });
 }
 
+export const SONIC_WORLD_QUERY_SEEDS = [
+  "Rosalía official audio",
+  "Bad Bunny official",
+  "Kali Uchis official",
+  "Rauw Alejandro official",
+  "NewJeans official",
+  "DEAN official",
+  "IU official audio",
+  "BIBI official",
+  "LE SSERAFIM official",
+  "Stromae official",
+  "Indila official",
+  "Videoclub official",
+  "Angèle official",
+  "Fujii Kaze official",
+  "Yoasobi official",
+  "King Gnu official",
+  "Lamp official",
+  "Elyanna official",
+  "Cairokee official",
+];
+
 export const SECTION_QUERY_EXPANSIONS: Record<string, string[]> = {
   bangla: [
-    "new bangla songs official audio | bangla band official audio -hindi -english -punjabi -natok -reaction -status",
-    "top bangla new hits official audio track -hindi -english -punjabi -natok",
-    "popular bangla romantic acoustic official audio songs -hindi -english -natok",
-    "bangla rock folk fusion official music audio -hindi -english -natok",
-    "best bangla studio songs official audio release -hindi -english",
+    "Coke Studio Bangla official",
+    "Hatirpool Sessions official",
+    "Odd Signature official audio",
+    "Meghdol official music video",
+    "Shironamhin official",
+    "Artcell official audio",
+    "Anupam Roy official",
+    "Arnob official Wind of Change Bangla",
+    "Bengal Parampara official music",
   ],
   "bengal-echo": [
-    "new bangla songs official audio | bangla band official audio -hindi -english -punjabi -natok -reaction -status",
-    "top bangla new hits official audio track -hindi -english -punjabi -natok",
-    "popular bangla romantic acoustic official audio songs -hindi -english -natok",
-    "bangla rock folk fusion official music audio -hindi -english -natok",
-    "best bangla studio songs official audio release -hindi -english",
+    "Coke Studio Bangla official",
+    "Hatirpool Sessions official",
+    "Odd Signature official audio",
+    "Meghdol official music video",
+    "Shironamhin official",
+    "Artcell official audio",
+    "Anupam Roy official",
+    "Arnob official Wind of Change Bangla",
+    "Bengal Parampara official music",
+  ],
+  "bengal echo": [
+    "Coke Studio Bangla official",
+    "Hatirpool Sessions official",
+    "Odd Signature official audio",
+    "Meghdol official music video",
+    "Shironamhin official",
+    "Artcell official audio",
+    "Anupam Roy official",
+    "Arnob official Wind of Change Bangla",
+    "Bengal Parampara official music",
   ],
   "bangla-beats": [
-    "new bangla songs official audio | bangla band official audio -hindi -english -punjabi -natok -reaction -status",
-    "top bangla new hits official audio track -hindi -english -punjabi -natok",
-    "popular bangla romantic acoustic official audio songs -hindi -english -natok",
-    "bangla rock folk fusion official music audio -hindi -english -natok",
-    "best bangla studio songs official audio release -hindi -english",
+    "Coke Studio Bangla official",
+    "Hatirpool Sessions official",
+    "Odd Signature official audio",
+    "Meghdol official music video",
+    "Shironamhin official",
+    "Artcell official audio",
+    "Anupam Roy official",
+    "Arnob official Wind of Change Bangla",
+    "Bengal Parampara official music",
   ],
   hindi: [
-    "latest hindi official audio songs | bollywood official audio -bangla -english -reaction -status",
-    "trending romantic hindi songs official audio -bangla -english",
-    "soulful bollywood melodies official audio songs -bangla -english",
-    "hindi unplugged acoustic official audio songs -bangla -english",
-    "top hindi pop tracks official audio -bangla -english",
+    "latest hindi songs official music video bollywood hits T-Series Sony Music",
+    "trending romantic hindi songs official music video",
+    "popular bollywood hits official audio Zee Music",
+    "new hindi pop songs official audio",
   ],
   "hindi-reverie": [
-    "latest hindi official audio songs | bollywood official audio -bangla -english -reaction -status",
-    "trending romantic hindi songs official audio -bangla -english",
-    "soulful bollywood melodies official audio songs -bangla -english",
-    "hindi unplugged acoustic official audio songs -bangla -english",
-    "top hindi pop tracks official audio -bangla -english",
+    "latest hindi songs official music video bollywood hits T-Series Sony Music",
+    "trending romantic hindi songs official music video",
+    "popular bollywood hits official audio Zee Music",
+    "new hindi pop songs official audio",
   ],
   "soft-hindi-vibes": [
-    "latest hindi official audio songs | bollywood official audio -bangla -english -reaction -status",
-    "trending romantic hindi songs official audio -bangla -english",
-    "soulful bollywood melodies official audio songs -bangla -english",
-    "hindi unplugged acoustic official audio songs -bangla -english",
-    "top hindi pop tracks official audio -bangla -english",
+    "latest hindi songs official music video bollywood hits T-Series Sony Music",
+    "trending romantic hindi songs official music video",
+    "popular bollywood hits official audio Zee Music",
   ],
   english: [
-    "new english pop official audio songs | viral english songs -hindi -bangla -bollywood",
-    "top billboard english pop hits official audio -hindi -bangla",
-    "global acoustic chill english songs official audio -hindi -bangla",
-    "trending international pop hits official audio -hindi -bangla",
-    "new english radio songs official audio -hindi -bangla",
+    "The Weeknd official music video",
+    "Billie Eilish official audio",
+    "Dua Lipa official audio",
+    "Coldplay official",
+    "Post Malone official",
+    "Taylor Swift official",
+    "Harry Styles official",
+    "Bruno Mars Silk Sonic official",
+    "COLORS SHOW official",
+    "Tiny Desk Concert official",
+    "BBC Radio 1 Live Lounge",
+    "Majestic Casual official",
   ],
   "english-essence": [
-    "new english pop official audio songs | viral english songs -hindi -bangla -bollywood",
-    "top billboard english pop hits official audio -hindi -bangla",
-    "global acoustic chill english songs official audio -hindi -bangla",
-    "trending international pop hits official audio -hindi -bangla",
-    "new english radio songs official audio -hindi -bangla",
+    "The Weeknd official music video",
+    "Billie Eilish official audio",
+    "Dua Lipa official audio",
+    "Coldplay official",
+    "Post Malone official",
+    "Taylor Swift official",
+    "Harry Styles official",
+    "Bruno Mars Silk Sonic official",
+    "COLORS SHOW official",
+    "Tiny Desk Concert official",
+    "BBC Radio 1 Live Lounge",
+    "Majestic Casual official",
   ],
   "boost-aura": [
-    "drift phonk official audio | phonk music official audio -top10 -top20 -top50 -recap",
-    "brazilian phonk viral official audio tracks -top10 -top20 -top50",
-    "aggressive drift phonk bass boosted audio -top10 -top20 -top50",
-    "gym workout phonk montage official audio -top10 -top20 -top50",
-    "phonk dark ambient speed up official audio -top10 -top20 -top50",
+    "drift phonk official audio viral brazilian phonk music",
+    "brazilian phonk viral official audio tracks",
+    "aggressive drift phonk bass boosted audio",
+    "gym workout phonk montage official audio",
   ],
   global: [
-    "kpop official music video | latin hits reggaeton official audio -hindi -bangla -bollywood -natok",
-    "afrobeats viral hits official audio | amapiano -hindi -bangla -bollywood",
-    "jpop trending official audio tracks -hindi -bangla -bollywood",
-    "latin reggaeton hits official music video -hindi -bangla -bollywood",
+    "Rosalía official audio",
+    "Bad Bunny official",
+    "Kali Uchis official",
+    "Rauw Alejandro official",
+    "NewJeans official",
+    "DEAN official",
+    "IU official audio",
+    "BIBI official",
+    "LE SSERAFIM official",
+    "Stromae official",
+    "Indila official",
+    "Videoclub official",
+    "Angèle official",
+    "Fujii Kaze official",
+    "Yoasobi official",
+    "King Gnu official",
+    "Lamp official",
+    "Elyanna official",
+    "Cairokee official",
   ],
   "sonic-world": [
-    "kpop official music video | latin hits reggaeton official audio -hindi -bangla -bollywood -natok",
-    "afrobeats viral hits official audio | amapiano -hindi -bangla -bollywood",
-    "jpop trending official audio tracks -hindi -bangla -bollywood",
-    "latin reggaeton hits official music video -hindi -bangla -bollywood",
+    "Rosalía official audio",
+    "Bad Bunny official",
+    "Kali Uchis official",
+    "Rauw Alejandro official",
+    "NewJeans official",
+    "DEAN official",
+    "IU official audio",
+    "BIBI official",
+    "LE SSERAFIM official",
+    "Stromae official",
+    "Indila official",
+    "Videoclub official",
+    "Angèle official",
+    "Fujii Kaze official",
+    "Yoasobi official",
+    "King Gnu official",
+    "Lamp official",
+    "Elyanna official",
+    "Cairokee official",
+  ],
+  "sonic world": [
+    "Rosalía official audio",
+    "Bad Bunny official",
+    "Kali Uchis official",
+    "Rauw Alejandro official",
+    "NewJeans official",
+    "DEAN official",
+    "IU official audio",
+    "BIBI official",
+    "LE SSERAFIM official",
+    "Stromae official",
+    "Indila official",
+    "Videoclub official",
+    "Angèle official",
+    "Fujii Kaze official",
+    "Yoasobi official",
+    "King Gnu official",
+    "Lamp official",
+    "Elyanna official",
+    "Cairokee official",
   ],
   "global-tracks": [
-    "kpop official music video | latin hits reggaeton official audio -hindi -bangla -bollywood -natok",
-    "afrobeats viral hits official audio | amapiano -hindi -bangla -bollywood",
-    "jpop trending official audio tracks -hindi -bangla -bollywood",
-    "latin reggaeton hits official music video -hindi -bangla -bollywood",
+    "Rosalía official audio",
+    "Bad Bunny official",
+    "Kali Uchis official",
+    "Rauw Alejandro official",
+    "NewJeans official",
+    "DEAN official",
+    "IU official audio",
+    "BIBI official",
+    "LE SSERAFIM official",
+    "Stromae official",
+    "Indila official",
+    "Videoclub official",
+    "Angèle official",
+    "Fujii Kaze official",
+    "Yoasobi official",
+    "King Gnu official",
+    "Lamp official",
+    "Elyanna official",
+    "Cairokee official",
   ],
   trending: [
-    "top trending hindi bollywood english pop phonk viral official audio",
-    "global viral chart top tracks official audio",
-    "trending popular world hits official music audio",
+    "top trending official music video 2026",
+    "global chart hit songs official music",
+    "viral popular songs official audio",
   ],
   "mevo-pulse": [
-    "top trending hindi bollywood english pop phonk viral official audio",
-    "global viral chart top tracks official audio",
-    "trending popular world hits official music audio",
+    "top trending official music video 2026",
+    "global chart hit songs official music",
+    "viral popular songs official audio",
   ],
 };
 
@@ -1417,6 +1548,8 @@ export async function fetchYouTubeTrending(
 
       if (!isPlayableTrack({ id: rawId, duration: song.duration })) return false;
       if (isShortsVideo(song.title, (song as any).description || "", song.duration || 0)) return false;
+      if (!isAcceptableCatalogTrack(song.title, song.artist, (song as any).description || "", song.duration || 0).acceptable) return false;
+      if (((sectionId as string) === "global" || (sectionId as string) === "mevo-pulse" || categoryTitle === "MEVO Pulse") && isBengaliTrack(song)) return false;
 
       seenIds.add(rawId);
       if (normTitle && normArtist) seenSignatures.add(sig);
@@ -1516,162 +1649,15 @@ export async function fetchYouTubeCategoryTracks(
   categoryTitle = "Category",
   options: { trending?: boolean } = {}
 ): Promise<Song[]> {
-  const normSection = (sectionId || "global").toLowerCase();
-  const persistentKey = `category:${normSection}`;
-  const memoryKey = `category:${normSection}:${order}:${targetCount}`;
-
-  return fetchWithSingleFlight<Song[]>(memoryKey, async (): Promise<Song[]> => {
-    // 1. Check persistent Supabase cache first
-    const persistent = await getFromApiCache<Song[]>(persistentKey);
-    if (persistent && Array.isArray(persistent) && persistent.length >= Math.ceil(targetCount * 0.8)) {
-      return persistent.slice(0, targetCount);
-    }
-
-    const baseUrl = getExtractorBaseUrl();
-    const collectedSongs: Song[] = [];
-    const seenIds = new Set<string>();
-    const seenSignatures = new Set<string>();
-
-    function addCandidate(song: Song): boolean {
-      const rawId = (song.id || "").replace(/^yt-/, "").trim().toLowerCase();
-      if (!rawId || seenIds.has(rawId)) return false;
-
-      const normTitle = (song.title || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 24);
-      const normArtist = (song.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16);
-      const sig = `${normTitle}___${normArtist}`;
-      if (normTitle && normArtist && seenSignatures.has(sig)) return false;
-
-      // Validate playable & duration bounds
-      if (!isPlayableTrack({ id: rawId, duration: song.duration })) return false;
-
-      // Validate not shorts
-      if (isShortsVideo(song.title, (song as any).description || "", song.duration || 0)) return false;
-
-      // Validate section eligibility
-      const eligibility = validateSectionEligibility({ title: song.title, artist: song.artist }, sectionId);
-      if (!eligibility.isValid) return false;
-
-      seenIds.add(rawId);
-      if (normTitle && normArtist) seenSignatures.add(sig);
-      collectedSongs.push(song);
-      return true;
-    }
-
-    let pageToken: string | null = null;
-    let pageCount = 0;
-    const maxPages = 2; // Part A #1: Reduced from 6 to 2 to cap quota consumption
-    const expansions = SECTION_QUERY_EXPANSIONS[sectionId] || SECTION_QUERY_EXPANSIONS[categoryTitle.toLowerCase()] || [];
-    let expansionIndex = 0;
-
-    while (collectedSongs.length < targetCount && pageCount < maxPages) {
-      // Part A #1: If collectedSongs.length is already within 20% of targetCount, stop early
-      if (collectedSongs.length >= Math.ceil(targetCount * 0.8)) {
-        break;
-      }
-
-      pageCount++;
-      const currentQuery = expansionIndex === 0 ? query : (expansions[expansionIndex] || query);
-      const pageParam: string = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
-      let gotNewCandidatesOnPage = false;
-      let nextPageTokenFromResponse: string | null = null;
-
-      try {
-        const endpoint: string = `${baseUrl}/api/youtube/category?q=${encodeURIComponent(currentQuery.trim())}&order=${order}&limit=50&sectionId=${encodeURIComponent(sectionId)}&categoryTitle=${encodeURIComponent(categoryTitle)}${pageParam}`;
-        const res: Response = await fetch(endpoint);
-        if (res.ok) {
-          const data: any = await res.json();
-          nextPageTokenFromResponse = data.nextPageToken || null;
-          if (data && Array.isArray(data.songs) && data.songs.length > 0) {
-            for (const it of data.songs) {
-              const song = youTubeVideoToPlayerSong(
-                {
-                  id: it.id,
-                  title: it.title,
-                  channelTitle: it.artist || it.channelTitle || it.uploader,
-                  thumbnail: it.thumbnail,
-                  duration: it.duration,
-                  viewCount: it.viewCount || it.view_count || 0,
-                  publishedAt: it.publishedAt,
-                },
-                sectionId,
-                categoryTitle,
-                { trending: options.trending ?? false }
-              );
-              if (addCandidate(song)) {
-                gotNewCandidatesOnPage = true;
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.warn(`[fetchYouTubeCategoryTracks] Page ${pageCount} error for "${currentQuery}":`, err);
-      }
-
-      // Part A #1: Skip /api/search fallback call entirely if /api/youtube/category call already returned zero new candidates
-      if (collectedSongs.length < targetCount && gotNewCandidatesOnPage && !nextPageTokenFromResponse) {
-        try {
-          const cleanQuery = currentQuery.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
-          const fallbackEndpoint: string = `${baseUrl}/api/search?q=${encodeURIComponent(cleanQuery)}&limit=50&type=discovery&pool=discovery${pageParam}`;
-          const sRes: Response = await fetch(fallbackEndpoint);
-          if (sRes.ok) {
-            const sData: any = await sRes.json();
-            nextPageTokenFromResponse = sData.nextPageToken || null;
-            if (sData && Array.isArray(sData.items)) {
-              for (const it of sData.items) {
-                const song = youTubeVideoToPlayerSong(
-                  {
-                    id: it.id,
-                    title: it.title,
-                    channelTitle: it.artist || it.channelTitle || it.uploader,
-                    thumbnail: it.thumbnail,
-                    duration: it.duration,
-                    viewCount: it.viewCount || it.view_count || 0,
-                    publishedAt: it.publishedAt,
-                  },
-                  sectionId,
-                  categoryTitle,
-                  { trending: options.trending ?? false }
-                );
-                if (addCandidate(song)) {
-                  gotNewCandidatesOnPage = true;
-                }
-              }
-            }
-          }
-        } catch (fErr) {
-          console.warn("[fetchYouTubeCategoryTracks] Search fallback error:", fErr);
-        }
-      }
-
-      if (collectedSongs.length >= Math.ceil(targetCount * 0.8)) {
-        break;
-      }
-
-      // If this page added new candidates and has a next page token, try next page of same query once
-      if (gotNewCandidatesOnPage && nextPageTokenFromResponse && nextPageTokenFromResponse !== pageToken) {
-        pageToken = nextPageTokenFromResponse;
-      } else if (expansionIndex + 1 < expansions.length) {
-        // Query exhausted or produced 0 new candidates: advance to next expansion query
-        expansionIndex++;
-        pageToken = null; // reset pageToken for new expanded query
-      } else if (nextPageTokenFromResponse && nextPageTokenFromResponse !== pageToken) {
-        pageToken = nextPageTokenFromResponse;
-      } else {
-        break;
-      }
-    }
-
-    // Rank candidates using the dynamic scoring system
-    const ranked = filterAndRankSectionTracks(collectedSongs, sectionId);
-    const deduped = deduplicateYouTubeTracks(ranked);
-
-    // Part B: Persist into Supabase api_cache with 20h TTL
-    if (deduped.length > 0) {
-      void setInApiCache(persistentKey, "category", deduped, 20 * 3600);
-    }
-
-    return deduped.slice(0, targetCount);
-  });
+  const res = await fetchPaginatedYouTubeCategoryTracks(
+    query,
+    order,
+    targetCount,
+    null,
+    sectionId,
+    categoryTitle
+  );
+  return res.songs;
 }
 
 export interface PaginatedYouTubeSearchResults {
@@ -1901,6 +1887,21 @@ export async function fetchPaginatedYouTubeCategoryTracks(
       }
     }
 
+    // Bengal Echo aggressive quality sanitization
+    if (sectionId === "bangla" || (sectionId as string) === "bengal-echo") {
+      accumulated = accumulated.filter((s) => validateBengalEchoTrack(s).isValid);
+    }
+
+    // English Essence strict sanitization
+    if (sectionId === "english" || (sectionId as string) === "english-essence") {
+      accumulated = accumulated.filter((s) => validateEnglishEssenceTrack(s).isValid);
+    }
+
+    // Sonic World strict international sanitization
+    if (sectionId === "global" || (sectionId as string) === "sonic-world") {
+      accumulated = accumulated.filter((s) => validateSonicWorldTrack(s).isValid);
+    }
+
     // Deduplicate and rank accumulated candidate tracks for the section
     const ranked = filterAndRankSectionTracks(accumulated, sectionId);
     const deduped = deduplicateYouTubeTracks(ranked);
@@ -1918,5 +1919,27 @@ export async function fetchPaginatedYouTubeCategoryTracks(
       songs: deduped.slice(0, targetCount),
       nextPageToken: nextToken || null,
     };
+  });
+}
+
+/**
+ * Fetches Curated Studio-Quality Bengali Trending Tracks for "See All" view:
+ * Excludes clickbait, amateur stage shows, meme audio, devotional re-uploads, shorts (<90s).
+ * Enforces studio-quality releases from verified labels/artists (Coke Studio Bangla, Odd Signature, SVF, etc.).
+ */
+export async function fetchCuratedBengaliTrending(targetCount = 30): Promise<Song[]> {
+  const cacheKey = `bengali-trending:curated:${targetCount}`;
+  return fetchWithSingleFlight<Song[]>(cacheKey, async (): Promise<Song[]> => {
+    const query = "popular bangla official music video Coke Studio Bangla SVF Music G-Series latest hits";
+    const songs = await fetchYouTubeCategoryTracks(query, "viewCount", 50, "bangla", "Bengali Trending");
+    const curated = songs.filter((s) =>
+      isCuratedStudioBengaliTrack({
+        title: s.title,
+        artist: s.artist,
+        duration: s.duration,
+        description: (s as any).description || "",
+      })
+    );
+    return curated.slice(0, targetCount);
   });
 }

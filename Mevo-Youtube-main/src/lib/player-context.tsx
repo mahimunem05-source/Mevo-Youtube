@@ -2089,6 +2089,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               return;
             }
 
+            // Guard against premature stream cutoff: If track duration is known and playback stopped
+            // substantially before the end (e.g. connection dropped mid-song), do NOT treat it
+            // as legitimately completed and auto-skip.
+            const trackDuration = audioEl.duration || duration || endedSong.duration;
+            if (trackDuration && Number.isFinite(trackDuration) && trackDuration > 10) {
+              if (audioEl.currentTime < trackDuration - 4) {
+                console.warn(
+                  `[Mevo Audio] Premature stream end detected at ${audioEl.currentTime.toFixed(1)}s of ${trackDuration.toFixed(1)}s for "${endedSong.title}". Holding playback position without skipping.`
+                );
+                return;
+              }
+            }
+
             consecutiveSkipCountRef.current = 0;
             if (skipTimerRef.current) {
               clearTimeout(skipTimerRef.current);

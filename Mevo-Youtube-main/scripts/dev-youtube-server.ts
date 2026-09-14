@@ -3,7 +3,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { parseLrc, alignPlainLyrics, processLyricsLines, cleanSongTitle } from "../src/services/lyricsService.ts";
-import { getDirectAudioStreamUrl } from "./youtube-solver.ts";
+import { getDirectAudioStreamUrl, verifyStreamContinuouslyPlayable } from "./youtube-solver.ts";
+import {
+  isShortsVideo,
+  isAcceptableCatalogTrack,
+  calculateCuratedTrackScore,
+  isBengaliTrack,
+  validateBengalEchoTrack,
+  validateEnglishEssenceTrack,
+  validateSonicWorldTrack,
+} from "../src/lib/youtube-discovery.ts";
+import { extractCoreSongRoot, isSameCoreSong } from "../src/services/youtube.ts";
 
 interface CacheEntry<T> {
   data: T;
@@ -291,39 +301,38 @@ function parseIsoDuration(durationStr: string): number {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-const SHORTS_REGEX = /#(?:shorts|short)\b|\bshorts\b|\bshort video\b|\btiktok\b|\/shorts\/|\(shorts\)|\[shorts\]/i;
+function deduplicateCandidatePool<T extends { title?: string; id?: string; score?: number }>(
+  items: T[],
+  threshold = 0.70
+): T[] {
+  const result: T[] = [];
+  const seenRoots: string[] = [];
+  const seenIds = new Set<string>();
 
-function isShorts(title: string, desc = "", durationSec = 0): boolean {
-  if (SHORTS_REGEX.test(title) || SHORTS_REGEX.test(desc)) return true;
-  if (durationSec > 0 && durationSec < 55) return true;
-  return false;
-}
+  for (const item of items) {
+    if (!item) continue;
+    const rawId = (item.id || "").replace(/^yt-/, "").trim().toLowerCase();
+    if (rawId && seenIds.has(rawId)) continue;
 
-function calculateScore(item: { publishedAt?: string; viewCount?: number; duration?: number }): number {
-  const now = Date.now();
-  const pubTime = item.publishedAt ? Date.parse(item.publishedAt) : 0;
-  const days = pubTime > 0 ? Math.max(0.2, (now - pubTime) / (1000 * 60 * 60 * 24)) : 365;
-  const views = Math.max(0, item.viewCount || 0);
+    const title = item.title || "";
+    const coreRoot = extractCoreSongRoot(title);
 
-  const dailyVelocity = views / days;
-  const hypeScore = Math.log10(Math.max(1, dailyVelocity)) * 12;
-  const popularityScore = Math.log10(Math.max(1, views)) * 4;
+    let isDupe = false;
+    for (const seen of seenRoots) {
+      if (coreRoot && isSameCoreSong(seen, coreRoot, threshold)) {
+        isDupe = true;
+        break;
+      }
+    }
 
-  let baseFreshness = 0;
-  if (days <= 7) baseFreshness = 40;
-  else if (days <= 30) baseFreshness = 30;
-  else if (days <= 90) baseFreshness = 20;
-  else if (days <= 180) baseFreshness = 10;
-  else if (days <= 365) baseFreshness = 5;
-  else if (days <= 730) baseFreshness = 0;
-  else if (days <= 1460) baseFreshness = -12;
-  else if (days <= 2555) baseFreshness = -24;
-  else baseFreshness = -38;
+    if (!isDupe) {
+      if (rawId) seenIds.add(rawId);
+      if (coreRoot) seenRoots.push(coreRoot);
+      result.push(item);
+    }
+  }
 
-  const momentumScale = baseFreshness > 0 ? Math.min(1.0, Math.max(0.1, dailyVelocity / 50.0)) : 1.0;
-  const freshness = baseFreshness * momentumScale;
-
-  return hypeScore + popularityScore + freshness;
+  return result;
 }
 
 function getDevYouTubeCookies(): string {
@@ -428,10 +437,22 @@ async function getDirectAudioUrl(videoId: string, bypassCache = false): Promise<
       });
       const data = await res.json();
       const formats = (data.streamingData?.adaptiveFormats || []).concat(data.streamingData?.formats || []);
-      const audioFormats = formats.filter((f: any) => f.mimeType?.includes("audio/"));
-      audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-      for (const af of audioFormats) {
-        if (af.url) return af.url;
+      const candidates = formats.filter((f: any) =>
+        (f.mimeType?.includes("video/mp4") && (f.itag === 18 || f.itag === 22)) ||
+        f.mimeType?.includes("audio/")
+      );
+      candidates.sort((a: any, b: any) => {
+        const aProg = Boolean(a.mimeType?.includes("video/mp4") && (a.itag === 18 || a.itag === 22));
+        const bProg = Boolean(b.mimeType?.includes("video/mp4") && (b.itag === 18 || b.itag === 22));
+        if (aProg && !bProg) return -1;
+        if (!aProg && bProg) return 1;
+        return (b.bitrate || 0) - (a.bitrate || 0);
+      });
+      for (const cand of candidates) {
+        if (cand.url) {
+          const isPlayable = await verifyStreamContinuouslyPlayable(cand.url);
+          if (isPlayable) return cand.url;
+        }
       }
     } catch {
       // try next client
@@ -574,7 +595,7 @@ export function devYouTubePlugin(): Plugin {
           const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "15", 10)));
           const sectionId = urlObj.searchParams.get("sectionId") || "bangla";
           const pageToken = urlObj.searchParams.get("pageToken") || "";
-          const cacheKey = `trending:${region}:${limit}:${pageToken}`;
+          const cacheKey = `trending:curated_v2:${region}:${limit}:${pageToken}`;
 
           const cached = cache.get(cacheKey);
           if (cached) {
@@ -598,9 +619,9 @@ export function devYouTubePlugin(): Plugin {
             const data = await fetchWithKey(
               "discovery",
               (key) =>
-                `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,status&chart=mostPopular&videoCategoryId=10&regionCode=${encodeURIComponent(region)}&maxResults=50${pageParam}&key=${key}`
+                `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics,status&chart=mostPopular&videoCategoryId=10&videoEmbeddable=true&videoSyndicated=true&regionCode=${encodeURIComponent(region)}&maxResults=50${pageParam}&key=${key}`
             );
-            const items = (data.items || [])
+            const filtered = (data.items || [])
               .map((it: any) => {
                 const snippet = it.snippet || {};
                 const content = it.contentDetails || {};
@@ -613,14 +634,20 @@ export function devYouTubePlugin(): Plugin {
                 const embeddable = status.embeddable !== false;
                 const madeForKids = Boolean(status.madeForKids || status.selfDeclaredMadeForKids);
 
+                const thumbObj =
+                  snippet.thumbnails?.maxres ||
+                  snippet.thumbnails?.high ||
+                  snippet.thumbnails?.medium ||
+                  snippet.thumbnails?.default;
+                const thumbWidth = thumbObj?.width;
+                const thumbHeight = thumbObj?.height;
+
                 return {
                   id,
                   title,
                   artist: snippet.channelTitle || "",
                   thumbnail:
-                    snippet.thumbnails?.maxres?.url ||
-                    snippet.thumbnails?.high?.url ||
-                    snippet.thumbnails?.medium?.url ||
+                    thumbObj?.url ||
                     `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
                   duration: dur,
                   viewCount: parseInt(stats.viewCount || "0", 10),
@@ -629,15 +656,42 @@ export function devYouTubePlugin(): Plugin {
                   embeddable,
                   madeForKids,
                   description: desc,
+                  thumbWidth,
+                  thumbHeight,
                 };
               })
               .filter((it: any) => {
                 if (!it.id || it.embeddable === false || it.madeForKids) return false;
-                if (it.duration > 0 && (it.duration < 55 || it.duration > 480)) return false;
-                if (isShorts(it.title, it.description, it.duration)) return false;
+                if (it.duration > 0 && (it.duration < 90 || it.duration > 480)) return false;
+                if (isShortsVideo(it.title, it.description, it.duration)) return false;
+                if (it.thumbHeight && it.thumbWidth && it.thumbHeight > it.thumbWidth) return false;
+                if (!isAcceptableCatalogTrack(it.title, it.artist, it.description, it.duration, { width: it.thumbWidth, height: it.thumbHeight }).acceptable) return false;
+                if ((sectionId === "global" || sectionId === "mevo-pulse" || sectionId === "trending") && isBengaliTrack(it)) return false;
                 return true;
-              })
-              .sort((a: any, b: any) => calculateScore(b) - calculateScore(a));
+              });
+
+            filtered.sort((a: any, b: any) => a.viewCount - b.viewCount);
+            const total = filtered.length;
+            const scored = filtered.map((it: any, idx: number) => {
+              const percentile = total > 1 ? idx / (total - 1) : 0.8;
+              const { totalScore } = calculateCuratedTrackScore(
+                {
+                  title: it.title,
+                  artist: it.artist,
+                  channelTitle: it.artist,
+                  publishedAt: it.publishedAt,
+                  viewCount: it.viewCount,
+                  duration: it.duration,
+                },
+                percentile,
+                0.90
+              );
+              return { ...it, score: totalScore };
+            });
+
+            scored.sort((a: any, b: any) => b.score - a.score);
+            const deduped = deduplicateCandidatePool(scored);
+            const items = deduped.slice(0, limit);
 
             const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api" };
             cache.set(cacheKey, result, 72000); // 20 hours TTL
@@ -661,7 +715,7 @@ export function devYouTubePlugin(): Plugin {
           const limit = Math.min(50, Math.max(5, parseInt(urlObj.searchParams.get("limit") || "15", 10)));
           const sectionId = urlObj.searchParams.get("sectionId") || "bangla";
           const pageToken = urlObj.searchParams.get("pageToken") || "";
-          const cacheKey = `category:${query}:${order}:${limit}:${pageToken}`;
+          const cacheKey = `category:curated_v2:${query}:${order}:${limit}:${pageToken}`;
 
           const cached = cache.get(cacheKey);
           if (cached) {
@@ -672,7 +726,7 @@ export function devYouTubePlugin(): Plugin {
           }
 
           const sbCached = await getDevSupabaseCache<any>(cacheKey);
-          if (sbCached) {
+          if (sbCached && Array.isArray(sbCached.songs) && sbCached.songs.length > 0) {
             cache.set(cacheKey, sbCached, 72000);
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
@@ -685,7 +739,7 @@ export function devYouTubePlugin(): Plugin {
             const data = await fetchWithKey(
               "discovery",
               (key) =>
-                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&order=${encodeURIComponent(order)}&maxResults=50${pageParam}&key=${key}`
+                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&videoEmbeddable=true&videoSyndicated=true&order=${encodeURIComponent(order)}&maxResults=50${pageParam}&key=${key}`
             );
             const videoIds = (data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
             const snippetMap = new Map<string, any>();
@@ -695,21 +749,22 @@ export function devYouTubePlugin(): Plugin {
             }
             const details = await getVideoDetails(videoIds, "discovery");
 
-            const songs = videoIds
+            let rawSongs = videoIds
               .map((id: string) => {
                 const d = details.get(id);
                 const snip = snippetMap.get(id) || {};
                 const title = d?.title || snip.title || "";
                 const artist = d?.channelTitle || snip.channelTitle || snip.videoOwnerChannelTitle || "";
-                const thumb =
-                  d?.thumbnail ||
-                  snip.thumbnails?.maxres?.url ||
-                  snip.thumbnails?.high?.url ||
-                  snip.thumbnails?.medium?.url ||
-                  snip.thumbnails?.default?.url ||
-                  `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+                const thumbObj =
+                  snip.thumbnails?.maxres ||
+                  snip.thumbnails?.high ||
+                  snip.thumbnails?.medium ||
+                  snip.thumbnails?.default;
+                const thumb = d?.thumbnail || thumbObj?.url || `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
                 const desc = d?.description || snip.description || "";
                 const publishedAt = d?.publishedAt || snip.publishedAt || "";
+                const thumbWidth = thumbObj?.width;
+                const thumbHeight = thumbObj?.height;
 
                 return {
                   id,
@@ -723,19 +778,171 @@ export function devYouTubePlugin(): Plugin {
                   embeddable: d?.embeddable !== false,
                   isMadeForKids: Boolean(d?.isMadeForKids),
                   description: desc,
+                  thumbWidth,
+                  thumbHeight,
                 };
               })
               .filter((s: any) => {
                 if (!s.id || s.embeddable === false || s.isMadeForKids) return false;
-                if (s.duration > 0 && (s.duration < 55 || s.duration > 480)) return false;
-                if (isShorts(s.title, s.description, s.duration)) return false;
+                if (s.duration > 0 && (s.duration < 90 || s.duration > 480)) return false;
+                if (isShortsVideo(s.title, s.description, s.duration)) return false;
+                if (s.thumbHeight && s.thumbWidth && s.thumbHeight > s.thumbWidth) return false;
+                if (!isAcceptableCatalogTrack(s.title, s.artist, s.description, s.duration, { width: s.thumbWidth, height: s.thumbHeight }).acceptable) return false;
+                if (sectionId === "bangla" || sectionId === "bengal-echo") {
+                  if (!validateBengalEchoTrack({
+                    title: s.title,
+                    artist: s.artist,
+                    channelTitle: s.artist,
+                    description: s.description,
+                    duration: s.duration,
+                    thumbnailWidth: s.thumbWidth,
+                    thumbnailHeight: s.thumbHeight,
+                  }).isValid) return false;
+                }
+                if (sectionId === "english" || sectionId === "english-essence") {
+                  if (!validateEnglishEssenceTrack({
+                    title: s.title,
+                    artist: s.artist,
+                    channelTitle: s.artist,
+                    description: s.description,
+                    duration: s.duration,
+                    thumbnailWidth: s.thumbWidth,
+                    thumbnailHeight: s.thumbHeight,
+                  }).isValid) return false;
+                }
+                if (sectionId === "global" || sectionId === "sonic-world") {
+                  if (!validateSonicWorldTrack({
+                    title: s.title,
+                    artist: s.artist,
+                    channelTitle: s.artist,
+                    description: s.description,
+                    duration: s.duration,
+                    thumbnailWidth: s.thumbWidth,
+                    thumbnailHeight: s.thumbHeight,
+                  }).isValid) return false;
+                }
                 return true;
-              })
-              .sort((a: any, b: any) => calculateScore(b) - calculateScore(a));
+              });
 
-            const result = { songs, nextPageToken: data.nextPageToken || null, count: songs.length };
+            // If initial page yields fewer than 15 valid tracks and nextPageToken exists, fetch 1 additional page to ensure 15 target count
+            let finalNextToken = data.nextPageToken || null;
+            if (rawSongs.length < limit && data.nextPageToken) {
+              try {
+                const page2Data = await fetchWithKey(
+                  "discovery",
+                  (key) =>
+                    `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&videoEmbeddable=true&videoSyndicated=true&order=${encodeURIComponent(order)}&maxResults=50&pageToken=${encodeURIComponent(data.nextPageToken)}&key=${key}`
+                );
+                finalNextToken = page2Data.nextPageToken || null;
+                const v2Ids = (page2Data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
+                const snip2Map = new Map<string, any>();
+                for (const it of page2Data.items || []) {
+                  const vid = it.id?.videoId || it.id;
+                  if (vid) snip2Map.set(vid, it.snippet || {});
+                }
+                const details2 = await getVideoDetails(v2Ids, "discovery");
+                const page2Songs = v2Ids
+                  .map((id: string) => {
+                    const d = details2.get(id);
+                    const snip = snip2Map.get(id) || {};
+                    const thumbObj =
+                      snip.thumbnails?.maxres ||
+                      snip.thumbnails?.high ||
+                      snip.thumbnails?.medium ||
+                      snip.thumbnails?.default;
+                    const thumbWidth = thumbObj?.width;
+                    const thumbHeight = thumbObj?.height;
+                    return {
+                      id,
+                      title: d?.title || snip.title || "",
+                      artist: d?.channelTitle || snip.channelTitle || snip.videoOwnerChannelTitle || "",
+                      thumbnail: d?.thumbnail || thumbObj?.url || `https://img.youtube.com/vi/${id}/hqdefault.jpg`,
+                      duration: d?.duration || 0,
+                      viewCount: d?.viewCount || 0,
+                      publishedAt: d?.publishedAt || snip.publishedAt || "",
+                      section: sectionId,
+                      embeddable: d?.embeddable !== false,
+                      isMadeForKids: Boolean(d?.isMadeForKids),
+                      description: d?.description || snip.description || "",
+                      thumbWidth,
+                      thumbHeight,
+                    };
+                  })
+                  .filter((s: any) => {
+                    if (!s.id || s.embeddable === false || s.isMadeForKids) return false;
+                    if (s.duration > 0 && (s.duration < 90 || s.duration > 480)) return false;
+                    if (isShortsVideo(s.title, s.description, s.duration)) return false;
+                    if (s.thumbHeight && s.thumbWidth && s.thumbHeight > s.thumbWidth) return false;
+                    if (!isAcceptableCatalogTrack(s.title, s.artist, s.description, s.duration, { width: s.thumbWidth, height: s.thumbHeight }).acceptable) return false;
+                    if (sectionId === "bangla" || sectionId === "bengal-echo") {
+                      if (!validateBengalEchoTrack({
+                        title: s.title,
+                        artist: s.artist,
+                        channelTitle: s.artist,
+                        description: s.description,
+                        duration: s.duration,
+                        thumbnailWidth: s.thumbWidth,
+                        thumbnailHeight: s.thumbHeight,
+                      }).isValid) return false;
+                    }
+                    if (sectionId === "english" || sectionId === "english-essence") {
+                      if (!validateEnglishEssenceTrack({
+                        title: s.title,
+                        artist: s.artist,
+                        channelTitle: s.artist,
+                        description: s.description,
+                        duration: s.duration,
+                        thumbnailWidth: s.thumbWidth,
+                        thumbnailHeight: s.thumbHeight,
+                      }).isValid) return false;
+                    }
+                    if (sectionId === "global" || sectionId === "sonic-world") {
+                      if (!validateSonicWorldTrack({
+                        title: s.title,
+                        artist: s.artist,
+                        channelTitle: s.artist,
+                        description: s.description,
+                        duration: s.duration,
+                        thumbnailWidth: s.thumbWidth,
+                        thumbnailHeight: s.thumbHeight,
+                      }).isValid) return false;
+                    }
+                    return true;
+                  });
+                rawSongs.push(...page2Songs);
+              } catch {
+                // page 2 failed, proceed with page 1
+              }
+            }
+
+            rawSongs.sort((a: any, b: any) => a.viewCount - b.viewCount);
+            const totalSongs = rawSongs.length;
+            const scoredSongs = rawSongs.map((it: any, idx: number) => {
+              const percentile = totalSongs > 1 ? idx / (totalSongs - 1) : 0.8;
+              const { totalScore } = calculateCuratedTrackScore(
+                {
+                  title: it.title,
+                  artist: it.artist,
+                  channelTitle: it.artist,
+                  publishedAt: it.publishedAt,
+                  viewCount: it.viewCount,
+                  duration: it.duration,
+                },
+                percentile,
+                0.85
+              );
+              return { ...it, score: totalScore };
+            });
+
+            scoredSongs.sort((a: any, b: any) => b.score - a.score);
+            const dedupedSongs = deduplicateCandidatePool(scoredSongs);
+            const songs = dedupedSongs.slice(0, limit);
+
+            const result = { songs, nextPageToken: finalNextToken, count: songs.length };
             cache.set(cacheKey, result, 72000); // 20 hours TTL
-            await setDevSupabaseCache(cacheKey, "category", result, 72000);
+            if (songs.length > 0) {
+              await setDevSupabaseCache(cacheKey, "category", result, 72000);
+            }
             res.setHeader("Content-Type", "application/json");
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.end(JSON.stringify(result));
@@ -825,7 +1032,7 @@ export function devYouTubePlugin(): Plugin {
             const data = await fetchWithKey(
               targetPool,
               (key) =>
-                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&maxResults=${searchLimit}${pageParam}&key=${key}`
+                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&videoEmbeddable=true&videoSyndicated=true&maxResults=${searchLimit}${pageParam}&key=${key}`
             );
             const videoIds = (data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
             const snippetMap = new Map<string, any>();
@@ -835,7 +1042,7 @@ export function devYouTubePlugin(): Plugin {
             }
             const details = await getVideoDetails(videoIds, targetPool);
 
-            const items = videoIds
+            const rawItems = videoIds
               .map((id: string) => {
                 const d = details.get(id);
                 const snip = snippetMap.get(id) || {};
@@ -867,11 +1074,34 @@ export function devYouTubePlugin(): Plugin {
               })
               .filter((it: any) => {
                 if (it.embeddable === false || it.isMadeForKids) return false;
-                if (it.duration > 0 && (it.duration < 55 || it.duration > 480)) return false;
-                if (isShorts(it.title, it.description, it.duration)) return false;
+                if (it.duration > 0 && (it.duration < 60 || it.duration > 480)) return false;
+                if (isShortsVideo(it.title, it.description, it.duration)) return false;
+                if (!isAcceptableCatalogTrack(it.title, it.artist, it.description, it.duration).acceptable) return false;
                 return true;
-              })
-              .slice(0, limit);
+              });
+
+            rawItems.sort((a: any, b: any) => a.viewCount - b.viewCount);
+            const total = rawItems.length;
+            const scoredItems = rawItems.map((it: any, idx: number) => {
+              const percentile = total > 1 ? idx / (total - 1) : 0.8;
+              const { totalScore } = calculateCuratedTrackScore(
+                {
+                  title: it.title,
+                  artist: it.artist,
+                  channelTitle: it.artist,
+                  publishedAt: it.publishedAt,
+                  viewCount: it.viewCount,
+                  duration: it.duration,
+                },
+                percentile,
+                0.8
+              );
+              return { ...it, score: totalScore };
+            });
+
+            scoredItems.sort((a: any, b: any) => b.score - a.score);
+            const dedupedItems = deduplicateCandidatePool(scoredItems);
+            const items = dedupedItems.slice(0, limit);
 
             const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api", query, pool: targetPool };
             cache.set(cacheKey, result, 72000); // 20 hour TTL
@@ -1075,25 +1305,25 @@ export function devYouTubePlugin(): Plugin {
             // Notice: Only cache once upstream response is verified 200 or 206 below!
           }
 
-          // YouTube's googlevideo CDN returns 403 Forbidden on open-ended ranges (e.g. bytes=0-) or un-ranged requests.
-          // Clamp client range requests to bounded 1MB chunks so YouTube CDN always responds with 206 Partial Content.
+          // Support full continuous streaming and browser Range requests without artificial 1MB truncations.
           const rangeHeader = req.headers["range"] as string | undefined;
           let upstreamRange: string;
-          const chunkSize = 1048576; // 1 MB chunk
 
           if (rangeHeader) {
             const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
             if (match) {
               const start = parseInt(match[1], 10) || 0;
               const parsedEnd = match[2] ? parseInt(match[2], 10) : NaN;
-              const clientEnd = !Number.isNaN(parsedEnd) ? parsedEnd : null;
-              const end = clientEnd !== null ? Math.min(clientEnd, start + chunkSize - 1) : start + chunkSize - 1;
-              upstreamRange = `bytes=${start}-${end}`;
+              if (!Number.isNaN(parsedEnd)) {
+                upstreamRange = `bytes=${start}-${parsedEnd}`;
+              } else {
+                upstreamRange = `bytes=${start}-`;
+              }
             } else {
-              upstreamRange = `bytes=0-${chunkSize - 1}`;
+              upstreamRange = rangeHeader;
             }
           } else {
-            upstreamRange = `bytes=0-${chunkSize - 1}`;
+            upstreamRange = "bytes=0-";
           }
 
           const upstreamHeaders: Record<string, string> = {
@@ -1110,10 +1340,15 @@ export function devYouTubePlugin(): Plugin {
               upstreamRes = await fetch(audioUrl, {
                 headers: upstreamHeaders,
               });
-              // PART A #5: If verified playable (200 or 206), persist to cache
+              // PART A #5: Only cache if verified status 200 or 206 AND verified playable beyond 1MB!
               if (upstreamRes.status === 200 || upstreamRes.status === 206) {
-                cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
-                setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+                const isPlayable = await verifyStreamContinuouslyPlayable(audioUrl);
+                if (isPlayable) {
+                  cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
+                  setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+                } else {
+                  console.warn(`[Vite Dev YouTube] Refusing to cache stream URL for ${vidId}: failed continuation verification beyond 1MB.`);
+                }
               }
             } catch (fetchErr: any) {
               console.warn(`[Vite Dev YouTube] Upstream initial fetch error for ${vidId}:`, fetchErr.message);
@@ -1137,10 +1372,15 @@ export function devYouTubePlugin(): Plugin {
                 upstreamRes = await fetch(audioUrl, {
                   headers: upstreamHeaders,
                 });
-                // PART A #5: Only cache if verified status 200 or 206! Never cache 403 or broken URLs.
+                // PART A #5: Only cache if verified status 200 or 206 AND verified playable beyond 1MB!
                 if (upstreamRes && (upstreamRes.status === 200 || upstreamRes.status === 206)) {
-                  cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
-                  setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+                  const isPlayable = await verifyStreamContinuouslyPlayable(audioUrl);
+                  if (isPlayable) {
+                    cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
+                    setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+                  } else {
+                    console.warn(`[Vite Dev YouTube] Refusing to cache stream URL for ${vidId}: failed continuation verification beyond 1MB.`);
+                  }
                 } else {
                   console.warn(`[Vite Dev YouTube] Refusing to cache stream URL for ${vidId}: upstream status is ${upstreamRes?.status}`);
                 }
@@ -1169,7 +1409,8 @@ export function devYouTubePlugin(): Plugin {
           // Pipe audio stream server-side to client (NEVER 302 redirect directly to googlevideo.com)
           if (upstreamRes && upstreamRes.ok) {
             res.statusCode = upstreamRes.status;
-            res.setHeader("Content-Type", upstreamRes.headers.get("content-type") || "audio/mp4");
+            const upstreamCt = upstreamRes.headers.get("content-type") || "audio/mp4";
+            res.setHeader("Content-Type", upstreamCt.includes("video/mp4") ? "audio/mp4" : upstreamCt);
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept, User-Agent");
             res.setHeader("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges");
