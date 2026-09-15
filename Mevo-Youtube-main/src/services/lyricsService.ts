@@ -5,8 +5,76 @@ export function cleanArtistName(artist?: string): string {
       .replace(/\s*-\s*topic$/i, "")
       .replace(/\s*vevo$/i, "")
       .replace(/\s*official$/i, "")
+      .replace(/(?:feat\.|ft\.).*$/i, "")
+      .replace(/[\[\(].*?[\]\)]/g, "")
       .trim() || "Unknown Artist"
   );
+}
+
+const METADATA_JUNK_REGEX =
+  /(?:ar:|ti:|al:|by:|offset:|written\s+by|composed\s+by|arranged\s+by|lyrics?\s+by|produced\s+by|music\s+by|sync(?:ed)?\s+by|singer\s*:|label\s*:|https?:\/\/)/i;
+
+/**
+ * Strict lyric line validator:
+ * 1. Drops lines containing author tags, singer/composer credits, metadata tags, or URLs.
+ * 2. Drops empty lines or lines with purely whitespace/special characters (must have at least one Unicode letter or digit).
+ */
+export function isJunkOrMetadataLyric(text: string): boolean {
+  if (!text || typeof text !== "string") return true;
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+
+  // Drop lines with purely whitespace/special characters (must contain at least one letter or digit across any language script)
+  if (!/[\p{L}\p{N}]/u.test(trimmed)) {
+    return true;
+  }
+
+  // Filter out any line where the text matches metadata tags, artist/composer credits, or URLs
+  if (METADATA_JUNK_REGEX.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Duration Validation (Match Guard):
+ * Validates that fetched synced lyrics match the actual audio duration.
+ * If the duration differs significantly (>15 seconds), the match is rejected
+ * to prevent showing lyrics that are totally out-of-sync with vocals.
+ */
+export function isValidDurationMatch(
+  actualDuration?: number,
+  lyricsDuration?: number,
+  lines?: LyricLine[]
+): boolean {
+  if (!actualDuration || actualDuration <= 0) {
+    // If audio duration is unknown, allow match
+    return true;
+  }
+
+  // 1. Strict provider duration check: |lyricsDuration - actualDuration| <= 15
+  if (typeof lyricsDuration === "number" && lyricsDuration > 0) {
+    if (Math.abs(lyricsDuration - actualDuration) > 15) {
+      return false;
+    }
+    return true;
+  }
+
+  // 2. Lines fallback check when provider duration is unavailable
+  if (lines && lines.length > 0) {
+    const lastLineTime = lines[lines.length - 1].time;
+    // If the last lyric line starts more than 15s after the song has ended, reject
+    if (lastLineTime > actualDuration + 15) {
+      return false;
+    }
+    // If audio is significant (>60s) but lyrics finish before 40% of the song
+    if (actualDuration > 60 && lastLineTime < actualDuration * 0.4) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function getExtractorBaseUrl(): string {
@@ -255,24 +323,27 @@ export function transliterateUrdu(text: string): string {
  * - English / Latin -> 100% Native English Preserved
  */
 export function processLyricsLines(lines: LyricLine[]): LyricLine[] {
-  return lines.map((line) => {
-    let text = line.text;
-    if (/[\u0900-\u097F]/.test(text)) {
-      text = transliterateDevanagari(text);
-      if (text.length > 0) {
-        text = text.charAt(0).toUpperCase() + text.slice(1);
+  return lines
+    .filter((line) => line && !isJunkOrMetadataLyric(line.text))
+    .map((line) => {
+      let text = line.text;
+      if (/[\u0900-\u097F]/.test(text)) {
+        text = transliterateDevanagari(text);
+        if (text.length > 0) {
+          text = text.charAt(0).toUpperCase() + text.slice(1);
+        }
+      } else if (/[\u0600-\u06FF]/.test(text)) {
+        text = transliterateUrdu(text);
+        if (text.length > 0) {
+          text = text.charAt(0).toUpperCase() + text.slice(1);
+        }
       }
-    } else if (/[\u0600-\u06FF]/.test(text)) {
-      text = transliterateUrdu(text);
-      if (text.length > 0) {
-        text = text.charAt(0).toUpperCase() + text.slice(1);
-      }
-    }
-    return {
-      ...line,
-      text: text.trim(),
-    };
-  });
+      return {
+        ...line,
+        text: text.trim(),
+      };
+    })
+    .filter((line) => line && !isJunkOrMetadataLyric(line.text));
 }
 
 // ---------------------------------------------------------------------------
@@ -289,15 +360,18 @@ export function parseLrc(lrcString: string): LyricLine[] {
     const trimmed = rawLine.trim();
     if (!trimmed) continue;
 
-    // Discard ID tags like [ar:Singer], [ti:Title], [by:Author]
-    if (/^\[(ti|ar|al|by|offset|length|re|ve):/i.test(trimmed)) continue;
+    // Discard ID tags like [ar:Singer], [ti:Title], [by:Author], [offset:100], etc.
+    if (/^\[\s*(?:ti|ar|al|by|offset|length|re|ve)\s*:/i.test(trimmed)) continue;
+
+    // Check if the entire raw line matches metadata or junk
+    if (isJunkOrMetadataLyric(trimmed)) continue;
 
     timeRegex.lastIndex = 0;
     const matches = Array.from(trimmed.matchAll(timeRegex));
     if (matches.length === 0) continue;
 
     const textOnly = trimmed.replace(timeRegex, "").trim();
-    if (!textOnly) continue;
+    if (!textOnly || isJunkOrMetadataLyric(textOnly)) continue;
 
     for (const match of matches) {
       const minutes = parseInt(match[1], 10) || 0;
@@ -364,7 +438,7 @@ export function alignPlainLyrics(
 
   let pendingBreak = false;
   for (const l of rawLines) {
-    if (!l) {
+    if (!l || isJunkOrMetadataLyric(l)) {
       pendingBreak = true;
       continue;
     }
@@ -420,17 +494,64 @@ export function alignPlainLyrics(
 // ---------------------------------------------------------------------------
 // 5. Title & Artist Cleaning Utilities
 // ---------------------------------------------------------------------------
-export function cleanSongTitle(title: string): string {
+const TITLE_CLUTTER_REGEX =
+  /(?:[\[\(].*?[\)\]]|Official.*|Lyric.*|Audio.*|Video.*|Full Song|HD|4K|Remix|Cover|feat\..*|ft\..*)/gi;
+
+export function cleanSongTitle(title: string, artist?: string): string {
   if (!title) return "";
-  return title
-    .replace(/[\(\[\{].*?(?:official|audio|video|lyrics|hd|4k|remastered|version|feat|ft|full song|lyric video|music video|visualizer|slowed|reverb|teaser|trailer|song).*?[\)\]\}]/gi, "")
+
+  let cleaned = title;
+
+  // 1. Remove bracketed / parenthetical clutter and noise using specified Regex
+  cleaned = cleaned.replace(TITLE_CLUTTER_REGEX, " ");
+
+  // 2. Remove remaining orphan brackets or quotes
+  cleaned = cleaned.replace(/[\[\]\(\)\{\}"'“”]/g, " ");
+
+  // 3. Remove common YouTube noise suffixes and record labels
+  cleaned = cleaned
     .replace(/\s*-\s*topic$/i, "")
     .replace(/\s*ft\.?.*$/i, "")
     .replace(/\s*feat\.?.*$/i, "")
-    .replace(/\|\s*.*$/g, "")
-    .replace(/[-–—]\s*(?:official|audio|video|lyrics|t-series|zee music|speed records|sony music).*$/gi, "")
+    .replace(/\|\s*.*$/g, " ")
+    .replace(/[-–—]\s*(?:official|audio|video|lyrics|t-series|zee music|speed records|sony music).*$/gi, " ");
+
+  // 4. If title has "Artist - Title" format, strip the leading artist portion
+  if (artist && artist !== "Unknown Artist") {
+    const cleanArt = cleanArtistName(artist).toLowerCase();
+    const cleanPrimaryArt = cleanArt.split(/[,&/|]/)[0].trim();
+
+    const lowerCleaned = cleaned.toLowerCase();
+    if (lowerCleaned.startsWith(cleanArt + " - ")) {
+      cleaned = cleaned.slice(cleanArt.length + 3);
+    } else if (cleanPrimaryArt && lowerCleaned.startsWith(cleanPrimaryArt + " - ")) {
+      cleaned = cleaned.slice(cleanPrimaryArt.length + 3);
+    } else if (lowerCleaned.includes(" - ")) {
+      const parts = cleaned.split(/\s*[-–—]\s*/);
+      if (parts.length >= 2) {
+        if (
+          parts[0].toLowerCase().trim() === cleanArt ||
+          parts[0].toLowerCase().trim() === cleanPrimaryArt
+        ) {
+          cleaned = parts.slice(1).join(" - ");
+        } else if (
+          parts[parts.length - 1].toLowerCase().trim() === cleanArt ||
+          parts[parts.length - 1].toLowerCase().trim() === cleanPrimaryArt
+        ) {
+          cleaned = parts.slice(0, -1).join(" - ");
+        }
+      }
+    }
+  }
+
+  // 5. Clean trailing/leading delimiters and redundant whitespace
+  cleaned = cleaned
+    .replace(/^[\s\-–—|:]+/, "")
+    .replace(/[\s\-–—|:]+$/, "")
     .replace(/\s+/g, " ")
     .trim();
+
+  return cleaned || title.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -460,10 +581,13 @@ async function fetchFromLrclibMultiStep(
 
     if (res.ok) {
       const data = await res.json();
+      // Validate duration match guard before accepting synced lyrics
       if (data && data.syncedLyrics) {
-        const lines = parseLrc(data.syncedLyrics);
-        if (lines.length > 0) {
-          return { lines };
+        if (isValidDurationMatch(duration, data.duration)) {
+          const lines = parseLrc(data.syncedLyrics);
+          if (lines.length > 0 && isValidDurationMatch(duration, data.duration, lines)) {
+            return { lines };
+          }
         }
       }
       if (data && data.plainLyrics) {
@@ -492,10 +616,16 @@ async function fetchFromLrclibMultiStep(
       if (res.ok) {
         const results = await res.json();
         if (Array.isArray(results) && results.length > 0) {
-          const withSynced = results.find((r: any) => r.syncedLyrics && r.syncedLyrics.trim().length > 0);
+          // Duration validation match guard on search candidates
+          const withSynced = results.find(
+            (r: any) =>
+              r.syncedLyrics &&
+              r.syncedLyrics.trim().length > 0 &&
+              isValidDurationMatch(duration, r.duration)
+          );
           if (withSynced) {
             const lines = parseLrc(withSynced.syncedLyrics);
-            if (lines.length > 0) {
+            if (lines.length > 0 && isValidDurationMatch(duration, withSynced.duration, lines)) {
               return { lines };
             }
           }
@@ -542,11 +672,17 @@ async function fetchFromBackendLyrics(params: {
     if (res.ok) {
       const data = await res.json();
       if (data && Array.isArray(data.lines) && data.lines.length > 0) {
-        return {
-          source: data.source || "aligned",
-          language: data.language,
-          lines: processLyricsLines(data.lines),
-        };
+        const processed = processLyricsLines(data.lines);
+        if (
+          processed.length > 0 &&
+          isValidDurationMatch(params.duration, data.duration, processed)
+        ) {
+          return {
+            source: data.source || "aligned",
+            language: data.language,
+            lines: processed,
+          };
+        }
       }
     }
   } catch (err) {
@@ -590,7 +726,7 @@ export async function fetchSongLyrics(song: {
     }
   }
 
-  const cleanTitle = cleanSongTitle(song.title);
+  const cleanTitle = cleanSongTitle(song.title, song.artist);
   const cleanArtist = cleanArtistName(song.artist);
 
   // 3. Tier 1: Multi-Step LRCLIB Studio Synced Lyrics

@@ -473,6 +473,40 @@ async function fetchPlayerResponse(cleanId: string): Promise<{ data: any; html: 
     }
   } catch {}
 
+  // 4. Innertube client fallback (IOS - bypasses desktop bot challenges)
+  try {
+    const res = await fetch("https://www.youtube.com/youtubei/v1/player", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X; en_US)",
+        "X-YouTube-Client-Name": "5",
+        "X-YouTube-Client-Version": "19.45.4",
+      },
+      body: JSON.stringify({
+        videoId: cleanId,
+        context: {
+          client: {
+            clientName: "IOS",
+            clientVersion: "19.45.4",
+            deviceMake: "Apple",
+            deviceModel: "iPhone16,2",
+            osName: "iOS",
+            osVersion: "17.5.1.21F90",
+            hl: "en",
+            gl: "US",
+          },
+        },
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.streamingData) {
+        return { data, html: "" };
+      }
+    }
+  } catch {}
+
   return null;
 }
 

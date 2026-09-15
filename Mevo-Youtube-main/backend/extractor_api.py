@@ -611,10 +611,10 @@ def get_base_ydl_opts(client_list: list[str] | None = None):
             }
         }
     else:
-        # Default player clients: ['android', 'ios', 'web'] to eliminate 403 blocks
+        # Default player clients: ['ios', 'android', 'web'] to eliminate 403 blocks
         opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["android", "ios", "web"]
+                "player_client": ["ios", "android", "web"]
             }
         }
 
@@ -1739,6 +1739,113 @@ def extract_metadata_endpoint():
         return jsonify({"error": str(e)}), 500
 
 # ---------------------------------------------------------------------------
+# Resilient Fallback Pipeline: Invidious & Piped Public Instances
+# ---------------------------------------------------------------------------
+def fetch_fallback_audio_stream(vid_id: str) -> dict | None:
+    """
+    Resilient fallback pipeline: Queries public Invidious and Piped instances
+    when yt-dlp faces bot detection / 403 / 429 cloud server blocks.
+    """
+    clean_id = (vid_id or "").replace("yt-", "").strip()
+    if not clean_id:
+        return None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    # 1. Invidious instances (prioritizing user-requested nerdvpn instance)
+    invidious_instances = [
+        "https://invidious.nerdvpn.de",
+        "https://inv.nadeko.net",
+        "https://invidious.tiekoetter.com",
+        "https://yt.chocolatemoo53.com",
+        "https://inv.riverside.rocks",
+        "https://invidious.f5.si",
+        "https://yewtu.be",
+    ]
+
+    for base_url in invidious_instances:
+        try:
+            api_url = f"{base_url}/api/v1/videos/{clean_id}"
+            resp = requests.get(api_url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                formats = data.get("adaptiveFormats", []) or []
+                audio_formats = [
+                    f for f in formats
+                    if f.get("url") and (
+                        "audio" in (f.get("type") or "").lower()
+                        or f.get("itag") in (140, 251, 250, 249, 139, 171)
+                    )
+                ]
+                if not audio_formats:
+                    # check formatStreams as progressive audio fallback
+                    audio_formats = [f for f in data.get("formatStreams", []) if f.get("url")]
+
+                if audio_formats:
+                    audio_formats.sort(
+                        key=lambda x: int(x.get("bitrate") or x.get("quality") or 0),
+                        reverse=True
+                    )
+                    chosen_url = audio_formats[0]["url"]
+                    if chosen_url.startswith("/"):
+                        chosen_url = f"{base_url}{chosen_url}"
+                    logging.info(f"[ResilientFallback] Successfully resolved stream for {clean_id} via Invidious ({base_url})")
+                    return {
+                        "audioUrl": chosen_url,
+                        "stream_url": chosen_url,
+                        "title": data.get("title", ""),
+                        "uploader": data.get("author", ""),
+                        "duration": data.get("lengthSeconds", 0),
+                        "thumbnail": f"https://img.youtube.com/vi/{clean_id}/hqdefault.jpg",
+                        "id": clean_id,
+                        "source": "invidious_fallback",
+                    }
+        except Exception as err:
+            logging.debug(f"[ResilientFallback] Invidious {base_url} failed for {clean_id}: {err}")
+            continue
+
+    # 2. Piped instances
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.adminforge.de",
+        "https://api.piped.private.coffee",
+        "https://pipedapi.leptons.xyz",
+        "https://piped-api.privacy.com.de",
+        "https://pipedapi.nosebs.ru",
+    ]
+
+    for base_url in piped_instances:
+        try:
+            api_url = f"{base_url}/streams/{clean_id}"
+            resp = requests.get(api_url, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                audio_streams = data.get("audioStreams", []) or []
+                playable = [s for s in audio_streams if s.get("url")]
+                if playable:
+                    playable.sort(key=lambda s: int(s.get("bitrate") or 0), reverse=True)
+                    chosen_url = playable[0]["url"]
+                    logging.info(f"[ResilientFallback] Successfully resolved stream for {clean_id} via Piped ({base_url})")
+                    return {
+                        "audioUrl": chosen_url,
+                        "stream_url": chosen_url,
+                        "title": data.get("title", ""),
+                        "uploader": data.get("uploader", ""),
+                        "duration": data.get("duration", 0),
+                        "thumbnail": data.get("thumbnailUrl", f"https://img.youtube.com/vi/{clean_id}/hqdefault.jpg"),
+                        "id": clean_id,
+                        "source": "piped_fallback",
+                    }
+        except Exception as err:
+            logging.debug(f"[ResilientFallback] Piped {base_url} failed for {clean_id}: {err}")
+            continue
+
+    return None
+
+# ---------------------------------------------------------------------------
 # API Routes: /stream & /download
 # ---------------------------------------------------------------------------
 @app.route("/stream", methods=["GET", "HEAD", "POST", "OPTIONS"])
@@ -1774,17 +1881,20 @@ def stream_audio():
                 request_budget.record_request("stream", hit=True)
                 audio_url = cached_stream.get("audioUrl") if isinstance(cached_stream, dict) else cached_stream
 
-        # 2. Extract direct audio stream with mobile player clients (ios, android)
+        # 2. Extract direct audio stream with mobile player clients (ios, android, web)
         def _extract_stream():
             request_budget.record_request("stream", hit=False, upstream=True)
 
+            # Prioritize iOS and Android client emulation to bypass web bot checks:
+            # Equivalent to --extractor-args "youtube:player_client=ios,android,web"
             client_fallbacks = [
-                ["android", "ios", "web"],
+                ["ios", "android", "web"],
                 ["ios", "android"],
-                ["android"],
                 ["ios"],
+                ["android"],
             ]
 
+            # Extraction format remains bestaudio/best
             format_fallbacks = [
                 "bestaudio/best",
                 "bestaudio[ext=m4a]/bestaudio/best",
@@ -1841,11 +1951,24 @@ def stream_audio():
                         last_err = ex
                         msg = str(ex).lower()
                         if "bot" in msg or "sign in" in msg or "429" in msg or "login" in msg:
-                            logging.warning(f"[StreamExtraction] Challenge with client {client_list}, trying next client...")
+                            logging.warning(f"[StreamExtraction] Bot/sign-in challenge with client {client_list}, trying next client...")
                             break
                         continue
 
+            # If yt-dlp encounters bot detection, sign-in requirements, or 403/429,
+            # catch the error gracefully and query the resilient public instance fallback pipeline:
             if last_err:
+                logging.warning(
+                    f"[StreamExtraction] yt-dlp extraction failed for {vid_id} ({last_err}). "
+                    f"Invoking resilient fallback pipeline (Invidious / Piped)..."
+                )
+            fallback_stream = fetch_fallback_audio_stream(vid_id)
+            if fallback_stream:
+                search_cache.set(cache_key, fallback_stream, ttl=10800)
+                return fallback_stream
+
+            if last_err:
+                logging.error(f"[StreamExtraction] All extraction methods including fallback failed for {vid_id}: {last_err}")
                 raise last_err
             return None
 
@@ -1855,7 +1978,18 @@ def stream_audio():
                 audio_url = stream_info["audioUrl"]
 
         if not audio_url:
+            # Secondary fallback check
+            fallback_stream = fetch_fallback_audio_stream(vid_id)
+            if fallback_stream and fallback_stream.get("audioUrl"):
+                audio_url = fallback_stream["audioUrl"]
+                search_cache.set(cache_key, fallback_stream, ttl=10800)
+
+        if not audio_url:
             return jsonify({"error": "Failed to resolve stream URL."}), 404
+
+        # Support direct 302 redirect if explicitly requested by client
+        if request.args.get("redirect") == "1" or request.args.get("type") == "redirect":
+            return redirect(audio_url, code=302)
 
         # 3. Server-side Stream Proxying (Never 302 redirect directly to googlevideo.com)
         # YouTube CDN rejects open-ended ranges (e.g. bytes=0-) or un-ranged requests with 403 Forbidden.
@@ -1893,6 +2027,8 @@ def stream_audio():
             search_cache.delete(cache_key)
             try:
                 refreshed_info = _extract_stream()
+                if not refreshed_info or not refreshed_info.get("audioUrl"):
+                    refreshed_info = fetch_fallback_audio_stream(vid_id)
                 if refreshed_info and refreshed_info.get("audioUrl"):
                     audio_url = refreshed_info["audioUrl"]
                     upstream_res = requests.get(audio_url, headers=upstream_headers, stream=True, timeout=15)

@@ -371,6 +371,85 @@ function parseJsonBody(req: any): Promise<any> {
   });
 }
 
+async function fetchPublicInstanceAudio(videoId: string): Promise<string | null> {
+  const cleanId = videoId.replace(/^yt-/, "").trim();
+  if (!cleanId) return null;
+
+  const invidiousInstances = [
+    "https://invidious.nerdvpn.de",
+    "https://inv.nadeko.net",
+    "https://invidious.tiekoetter.com",
+    "https://yt.chocolatemoo53.com",
+    "https://inv.riverside.rocks",
+    "https://invidious.f5.si",
+    "https://yewtu.be",
+  ];
+
+  for (const base of invidiousInstances) {
+    try {
+      const res = await fetch(`${base}/api/v1/videos/${cleanId}`, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "application/json, text/plain, */*",
+        },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const formats = (data.adaptiveFormats || []).concat(data.formatStreams || []);
+        const audioFormats = formats.filter(
+          (f: any) => f.url && (f.type?.includes("audio") || [140, 251, 250, 249, 139].includes(f.itag))
+        );
+        if (audioFormats.length > 0) {
+          audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+          let chosen = audioFormats[0].url;
+          if (chosen.startsWith("/")) {
+            chosen = `${base}${chosen}`;
+          }
+          console.log(`[Vite Dev YouTube] Resolved ${cleanId} via Invidious (${base})`);
+          return chosen;
+        }
+      }
+    } catch {
+      // try next instance
+    }
+  }
+
+  const pipedInstances = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.adminforge.de",
+    "https://api.piped.private.coffee",
+    "https://pipedapi.leptons.xyz",
+    "https://piped-api.privacy.com.de",
+    "https://pipedapi.nosebs.ru",
+  ];
+
+  for (const base of pipedInstances) {
+    try {
+      const res = await fetch(`${base}/streams/${cleanId}`, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "application/json, text/plain, */*",
+        },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const audioStreams = (data.audioStreams || []).filter((s: any) => s.url);
+        if (audioStreams.length > 0) {
+          audioStreams.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+          console.log(`[Vite Dev YouTube] Resolved ${cleanId} via Piped (${base})`);
+          return audioStreams[0].url;
+        }
+      }
+    } catch {
+      // try next instance
+    }
+  }
+
+  return null;
+}
+
 async function getDirectAudioUrl(videoId: string, bypassCache = false): Promise<string | null> {
   const cleanId = videoId.replace(/^yt-/, "").trim();
   if (!cleanId) return null;
@@ -402,7 +481,7 @@ async function getDirectAudioUrl(videoId: string, bypassCache = false): Promise<
     // continue to fallback
   }
 
-  // 2. Try direct extraction with optional session cookies
+  // 3. Try direct extraction with mobile and web clients (prioritizing iOS/Android to bypass bot challenges)
   const cookies = getDevYouTubeCookies();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -413,8 +492,6 @@ async function getDirectAudioUrl(videoId: string, bypassCache = false): Promise<
   }
 
   const clients = [
-    { clientName: "WEB", clientVersion: "2.20240910.01.00" },
-    { clientName: "MWEB", clientVersion: "2.20240910.01.00" },
     {
       clientName: "IOS",
       clientVersion: "19.45.4",
@@ -423,6 +500,15 @@ async function getDirectAudioUrl(videoId: string, bypassCache = false): Promise<
       osName: "iOS",
       osVersion: "17.5.1.21F90",
     },
+    {
+      clientName: "ANDROID",
+      clientVersion: "19.45.38",
+      androidSdkVersion: 30,
+      osName: "Android",
+      osVersion: "11",
+    },
+    { clientName: "MWEB", clientVersion: "2.20240910.01.00" },
+    { clientName: "WEB", clientVersion: "2.20240910.01.00" },
   ];
 
   for (const client of clients) {
@@ -458,6 +544,12 @@ async function getDirectAudioUrl(videoId: string, bypassCache = false): Promise<
       // try next client
     }
   }
+
+  // 4. Resilient Public Instance Fallback (Invidious / Piped)
+  try {
+    const publicAudio = await fetchPublicInstanceAudio(cleanId);
+    if (publicAudio) return publicAudio;
+  } catch {}
 
   return null;
 }
@@ -1403,6 +1495,26 @@ export function devYouTubePlugin(): Plugin {
               });
             } catch (fallbackErr: any) {
               console.error(`[Vite Dev YouTube] Render fallback error for ${vidId}:`, fallbackErr.message);
+            }
+          }
+
+          // Fallback to Resilient Public Instances (Invidious / Piped) if Render is also blocked
+          if (!upstreamRes || upstreamRes.status >= 400) {
+            console.warn(
+              `[Vite Dev YouTube] Render fallback unavailable for ${vidId}. Engaging resilient public instance fallback pipeline...`
+            );
+            const fallbackAudio = await fetchPublicInstanceAudio(vidId);
+            if (fallbackAudio) {
+              try {
+                upstreamRes = await fetch(fallbackAudio, {
+                  headers: upstreamHeaders,
+                });
+                if (upstreamRes && (upstreamRes.status === 200 || upstreamRes.status === 206)) {
+                  cache.set(streamCacheKey, fallbackAudio, 7200);
+                }
+              } catch (pubErr: any) {
+                console.error(`[Vite Dev YouTube] Public instance stream fetch error for ${vidId}:`, pubErr.message);
+              }
             }
           }
 
