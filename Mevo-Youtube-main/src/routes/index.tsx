@@ -124,17 +124,50 @@ export function Index() {
         HOME_SECTIONS.map(async (sec) => {
           if (sec.source !== "youtube") return { id: sec.id, songs: [] };
           try {
+            const targetCount = 15;
+            const collectedSongs: PlayerSong[] = [];
+            const seenIds = new Set<string>();
+            let pageToken: string | null = null;
+            let pageCount = 0;
+            const maxPages = 4;
+
             if (sec.type === "chart" || sec.id === "mevo-pulse") {
-              const res = await fetchPaginatedYouTubeCategoryTracks(
-                "top trending hindi bollywood english pop phonk viral official audio",
-                "viewCount",
-                20,
-                null,
-                "global",
-                sec.title
-              );
-              const songs = (res.songs || []).filter((s) => !isBengaliTrack(s));
-              return { id: sec.id, songs: songs.slice(0, 15) };
+              const query = "top trending hindi bollywood english pop phonk viral official audio";
+
+              while (collectedSongs.length < targetCount && pageCount < maxPages) {
+                pageCount++;
+                const res = await fetchPaginatedYouTubeCategoryTracks(
+                  query,
+                  "viewCount",
+                  20,
+                  pageToken,
+                  "global",
+                  sec.title
+                );
+                const pageSongs = (res.songs || []).filter((s) => !isBengaliTrack(s));
+                for (const s of pageSongs) {
+                  const rawId = (s.id || "").replace(/^yt-/, "").trim().toLowerCase();
+                  if (rawId && !seenIds.has(rawId)) {
+                    seenIds.add(rawId);
+                    collectedSongs.push(s);
+                  }
+                }
+                if (collectedSongs.length >= targetCount || !res.nextPageToken) break;
+                pageToken = res.nextPageToken;
+              }
+
+              if (collectedSongs.length < targetCount) {
+                const trending = await fetchYouTubeTrending(sec.regionCode || "US", targetCount, "global", sec.title);
+                for (const s of trending) {
+                  const rawId = (s.id || "").replace(/^yt-/, "").trim().toLowerCase();
+                  if (rawId && !seenIds.has(rawId)) {
+                    seenIds.add(rawId);
+                    collectedSongs.push(s);
+                  }
+                }
+              }
+
+              return { id: sec.id, songs: collectedSongs };
             } else if (sec.type === "search" && sec.query) {
               const sectionId: SectionId =
                 sec.id === "bengal-echo"
@@ -147,23 +180,38 @@ export function Index() {
                         ? "boost-aura"
                         : "global";
 
-              const res = await fetchPaginatedYouTubeCategoryTracks(
-                sec.query,
-                sec.order || "viewCount",
-                20,
-                null,
-                sectionId,
-                sec.title
-              );
-              let songs = res.songs || [];
-              if (sec.id === "bengal-echo") {
-                songs = songs.filter((s) => validateBengalEchoTrack(s).isValid);
-              } else if (sec.id === "english-essence") {
-                songs = songs.filter((s) => validateEnglishEssenceTrack(s).isValid);
-              } else if (sec.id === "sonic-world") {
-                songs = songs.filter((s) => validateSonicWorldTrack(s).isValid);
+              while (collectedSongs.length < targetCount && pageCount < maxPages) {
+                pageCount++;
+                const res = await fetchPaginatedYouTubeCategoryTracks(
+                  sec.query,
+                  sec.order || "viewCount",
+                  20,
+                  pageToken,
+                  sectionId,
+                  sec.title
+                );
+                let pageSongs = res.songs || [];
+                if (sec.id === "bengal-echo") {
+                  pageSongs = pageSongs.filter((s) => validateBengalEchoTrack(s).isValid);
+                } else if (sec.id === "english-essence") {
+                  pageSongs = pageSongs.filter((s) => validateEnglishEssenceTrack(s).isValid);
+                } else if (sec.id === "sonic-world") {
+                  pageSongs = pageSongs.filter((s) => validateSonicWorldTrack(s).isValid);
+                }
+
+                for (const s of pageSongs) {
+                  const rawId = (s.id || "").replace(/^yt-/, "").trim().toLowerCase();
+                  if (rawId && !seenIds.has(rawId)) {
+                    seenIds.add(rawId);
+                    collectedSongs.push(s);
+                  }
+                }
+
+                if (collectedSongs.length >= targetCount || !res.nextPageToken) break;
+                pageToken = res.nextPageToken;
               }
-              return { id: sec.id, songs: songs.slice(0, 15) };
+
+              return { id: sec.id, songs: collectedSongs };
             }
           } catch (err) {
             console.warn(`Failed to fetch section ${sec.id} from YouTube:`, err);

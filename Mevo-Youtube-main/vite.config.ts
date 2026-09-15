@@ -5,6 +5,8 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { devYouTubePlugin } from "./scripts/dev-youtube-server.ts";
 
+import { fileURLToPath } from "node:url";
+
 // Live Lyrics & Dedicated YouTube Dev Server
 export default defineConfig({
   plugins: [
@@ -24,6 +26,9 @@ export default defineConfig({
     },
   },
   resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
     dedupe: ["react", "react-dom"],
   },
 });

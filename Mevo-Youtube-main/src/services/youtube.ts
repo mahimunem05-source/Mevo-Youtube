@@ -3,8 +3,8 @@
  * Powers the YouTube-First streaming catalogue on MEVO with Extractor fallback.
  */
 
-import type { SectionId, Song } from "@/data/songs";
-import { getYouTubeStreamUrl, getExtractorBaseUrl } from "@/lib/extractor";
+import type { SectionId, Song } from "../data/songs.ts";
+import { getYouTubeStreamUrl, getExtractorBaseUrl } from "../lib/extractor.ts";
 import {
   filterAndRankSectionTracks,
   isShortsVideo,
@@ -16,8 +16,8 @@ import {
   validateBengalEchoTrack,
   validateEnglishEssenceTrack,
   validateSonicWorldTrack,
-} from "@/lib/youtube-discovery";
-import { getFromApiCache, setInApiCache, API_CACHE_TTL } from "@/services/apiCacheService";
+} from "../lib/youtube-discovery.ts";
+import { getFromApiCache, setInApiCache, API_CACHE_TTL } from "./apiCacheService.ts";
 
 export interface YouTubeSearchResult {
   id: string;

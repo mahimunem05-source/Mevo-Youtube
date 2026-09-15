@@ -1271,8 +1271,8 @@ export function devYouTubePlugin(): Plugin {
           const pathId = pathname.startsWith("/api/stream/")
             ? pathname.slice("/api/stream/".length)
             : pathname.startsWith("/stream/")
-            ? pathname.slice("/stream/".length)
-            : "";
+              ? pathname.slice("/stream/".length)
+              : "";
           const rawId = pathId || urlObj.searchParams.get("id") || urlObj.searchParams.get("videoId") || urlObj.searchParams.get("url") || "";
           const vidId = rawId.replace(/^yt-/, "").trim();
           if (!vidId) {
@@ -1345,7 +1345,7 @@ export function devYouTubePlugin(): Plugin {
                 const isPlayable = await verifyStreamContinuouslyPlayable(audioUrl);
                 if (isPlayable) {
                   cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
-                  setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+                  setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => { });
                 } else {
                   console.warn(`[Vite Dev YouTube] Refusing to cache stream URL for ${vidId}: failed continuation verification beyond 1MB.`);
                 }
@@ -1363,7 +1363,7 @@ export function devYouTubePlugin(): Plugin {
             cache.set(streamCacheKey, null as any, 0);
             const sb = getDevSupabase();
             if (sb) {
-              Promise.resolve(sb.from("api_cache").delete().eq("cache_key", streamCacheKey)).catch(() => {});
+              Promise.resolve(sb.from("api_cache").delete().eq("cache_key", streamCacheKey)).catch(() => { });
             }
 
             audioUrl = await getDirectAudioUrl(vidId, true);
@@ -1377,7 +1377,7 @@ export function devYouTubePlugin(): Plugin {
                   const isPlayable = await verifyStreamContinuouslyPlayable(audioUrl);
                   if (isPlayable) {
                     cache.set(streamCacheKey, audioUrl, 14400); // 4-hour TTL
-                    setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => {});
+                    setDevSupabaseCache(streamCacheKey, "stream_url", audioUrl, 14400).catch(() => { });
                   } else {
                     console.warn(`[Vite Dev YouTube] Refusing to cache stream URL for ${vidId}: failed continuation verification beyond 1MB.`);
                   }
@@ -1432,7 +1432,7 @@ export function devYouTubePlugin(): Plugin {
               let isClosed = false;
               req.on("close", () => {
                 isClosed = true;
-                reader.cancel().catch(() => {});
+                reader.cancel().catch(() => { });
               });
 
               try {
@@ -1449,7 +1449,7 @@ export function devYouTubePlugin(): Plugin {
                 if (!res.writableEnded && !res.destroyed) {
                   try {
                     res.end();
-                  } catch {}
+                  } catch { }
                 }
               }
               return;

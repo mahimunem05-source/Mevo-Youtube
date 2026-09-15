@@ -3,7 +3,7 @@
  * Provides multi-layer caching (L1 In-Memory + L2 Supabase) for YouTube API payloads.
  */
 
-import { supabase } from "@/lib/supabase";
+import { supabase } from "../lib/supabase.ts";
 
 export type ApiCacheType = "category" | "search" | "video_details" | "stream_url";
 

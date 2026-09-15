@@ -58,12 +58,18 @@ import { Equalizer } from "@/components/music/equalizer";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
-import { HOME_SECTIONS } from "@/lib/category-config";
+import { HOME_SECTIONS, type SectionConfig } from "@/lib/category-config";
 import {
   fetchYouTubeTrending,
   fetchYouTubeCategoryTracks,
   fetchPaginatedYouTubeCategoryTracks,
 } from "@/services/youtube";
+import {
+  isBengaliTrack,
+  validateBengalEchoTrack,
+  validateEnglishEssenceTrack,
+  validateSonicWorldTrack,
+} from "@/lib/youtube-discovery";
 import { fetchExpandedUserQuickPicks } from "@/lib/user-taste";
 
 export const Route = createFileRoute("/section/$sectionSlug")({
@@ -98,6 +104,99 @@ export const Route = createFileRoute("/section/$sectionSlug")({
 });
 
 const FAVORITE_SECTIONS_KEY = "mevo-favorite-sections";
+
+function getSectionFetchParams(sectionConfig: SectionConfig, sectionId: string) {
+  const isPulse = sectionConfig.type === "chart" || sectionConfig.id === "mevo-pulse" || sectionId === "trending";
+  const query = isPulse
+    ? "top trending hindi bollywood english pop phonk viral official audio"
+    : (sectionConfig.query || sectionConfig.title);
+
+  const secId: SectionId = (
+    sectionConfig.id === "bengal-echo" || sectionId === "bangla"
+      ? "bangla"
+      : sectionConfig.id === "hindi-reverie" || sectionId === "hindi"
+        ? "hindi"
+        : sectionConfig.id === "english-essence" || sectionId === "english"
+          ? "english"
+          : sectionConfig.id === "boost-aura" || sectionId === "boost-aura"
+            ? "boost-aura"
+            : "global"
+  );
+
+  const order = isPulse ? "viewCount" : (sectionConfig.order || "viewCount");
+
+  const filterFn = (s: PlayerSong) => {
+    if (!s || !s.id) return false;
+    if (isPulse) return !isBengaliTrack(s);
+    if (sectionConfig.id === "bengal-echo" || sectionId === "bangla") return validateBengalEchoTrack(s).isValid;
+    if (sectionConfig.id === "english-essence" || sectionId === "english") return validateEnglishEssenceTrack(s).isValid;
+    if (sectionConfig.id === "sonic-world" || sectionId === "global") return validateSonicWorldTrack(s).isValid;
+    return true;
+  };
+
+  return { isPulse, query, secId, order, filterFn };
+}
+
+async function fetchYouTubeSectionBatch(
+  sectionConfig: SectionConfig,
+  sectionId: string,
+  startToken: string | null,
+  targetBatchCount: number,
+  seenIds: Set<string>,
+  maxPages = 6
+): Promise<{ songs: PlayerSong[]; nextPageToken: string | null }> {
+  const { isPulse, query, secId, order, filterFn } = getSectionFetchParams(sectionConfig, sectionId);
+  const collected: PlayerSong[] = [];
+  let pageToken: string | null = startToken;
+  let pageCount = 0;
+
+  while (collected.length < targetBatchCount && pageCount < maxPages) {
+    pageCount++;
+    const res = await fetchPaginatedYouTubeCategoryTracks(
+      query,
+      order,
+      25,
+      pageToken,
+      secId,
+      sectionConfig.title
+    );
+
+    const candidates = (res.songs || []).filter(filterFn);
+    for (const s of candidates) {
+      const rawId = (s.id || "").replace(/^yt-/, "").trim().toLowerCase();
+      if (rawId && !seenIds.has(rawId)) {
+        seenIds.add(rawId);
+        collected.push(s);
+        if (collected.length >= targetBatchCount) break;
+      }
+    }
+
+    pageToken = res.nextPageToken || null;
+    if (collected.length >= targetBatchCount || !pageToken) break;
+  }
+
+  // Fallback for MEVO Pulse if needed to reach targetBatchCount
+  if (isPulse && collected.length < targetBatchCount) {
+    try {
+      const trending = await fetchYouTubeTrending(sectionConfig.regionCode || "US", 50, "global", sectionConfig.title);
+      for (const s of trending) {
+        const rawId = (s.id || "").replace(/^yt-/, "").trim().toLowerCase();
+        if (rawId && !seenIds.has(rawId)) {
+          seenIds.add(rawId);
+          collected.push(s);
+          if (collected.length >= targetBatchCount) break;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return {
+    songs: collected,
+    nextPageToken: pageToken,
+  };
+}
 
 function SectionDetailsPage() {
   const { section } = Route.useLoaderData();
@@ -167,27 +266,8 @@ function SectionDetailsPage() {
     queryKey: ["section-youtube-songs", section.id],
     queryFn: async () => {
       if (!sectionConfig || sectionConfig.source !== "youtube") return { songs: [], nextPageToken: null };
-      if (sectionConfig.type === "chart" || sectionConfig.id === "mevo-pulse") {
-        return fetchPaginatedYouTubeCategoryTracks(
-          "top trending hindi bollywood english pop phonk viral official audio",
-          "viewCount",
-          20,
-          null,
-          "bangla",
-          sectionConfig.title
-        );
-      }
-      if (sectionConfig.type === "search" && sectionConfig.query) {
-        return fetchPaginatedYouTubeCategoryTracks(
-          sectionConfig.query,
-          sectionConfig.order || "viewCount",
-          20,
-          null,
-          section.id as SectionId,
-          sectionConfig.title
-        );
-      }
-      return { songs: [], nextPageToken: null };
+      const seen = new Set<string>();
+      return fetchYouTubeSectionBatch(sectionConfig, section.id, null, 30, seen, 6);
     },
     enabled: Boolean(sectionConfig && sectionConfig.source === "youtube"),
     staleTime: 1000 * 60 * 15,
@@ -198,7 +278,7 @@ function SectionDetailsPage() {
     if (section.id !== "quick-picks" && youtubeQuery.data?.songs && paginatedSongs.length === 0) {
       setPaginatedSongs(youtubeQuery.data.songs);
       setNextPageToken(youtubeQuery.data.nextPageToken || null);
-      setHasMore(Boolean(youtubeQuery.data.nextPageToken || youtubeQuery.data.songs.length > 0));
+      setHasMore(Boolean(youtubeQuery.data.nextPageToken));
     }
   }, [section.id, youtubeQuery.data, paginatedSongs.length]);
 
@@ -244,30 +324,28 @@ function SectionDetailsPage() {
     setIsFetchingMore(true);
 
     try {
-      const query =
-        sectionConfig.id === "mevo-pulse"
-          ? "top trending hindi bollywood english pop phonk viral official audio"
-          : sectionConfig.query || sectionConfig.title;
-
+      const seen = new Set<string>(
+        paginatedSongsRef.current.map((s) => (s.id || "").replace(/^yt-/, "").trim().toLowerCase()).filter(Boolean)
+      );
       const currentToken = nextPageTokenRef.current;
+      if (!currentToken) {
+        setHasMore(false);
+        return;
+      }
 
-      const res = await fetchPaginatedYouTubeCategoryTracks(
-        query,
-        sectionConfig.order || "viewCount",
-        20,
+      const res = await fetchYouTubeSectionBatch(
+        sectionConfig,
+        section.id,
         currentToken,
-        section.id as SectionId,
-        sectionConfig.title
+        15,
+        seen,
+        4
       );
 
       if (res.songs.length > 0) {
-        setPaginatedSongs((prev) => {
-          const seen = new Set(prev.map((s) => s.id));
-          const newSongs = res.songs.filter((s) => !seen.has(s.id));
-          return [...prev, ...newSongs];
-        });
-        setNextPageToken(res.nextPageToken || null);
-        setHasMore(Boolean(res.nextPageToken && res.songs.length > 0));
+        setPaginatedSongs((prev) => [...prev, ...res.songs]);
+        setNextPageToken(res.nextPageToken);
+        setHasMore(Boolean(res.nextPageToken));
       } else {
         setHasMore(false);
       }
