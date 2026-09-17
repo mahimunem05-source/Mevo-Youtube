@@ -909,15 +909,25 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
             with youtube_api_semaphore:
                 # 1. Search videos with bounded retry for transient 429/5xx
                 search_url = "https://www.googleapis.com/youtube/v3/search"
-                params = {
-                    "part": "snippet",
-                    "type": "video",
-                    "videoCategoryId": "10",
-                    "videoEmbeddable": "true",
-                    "maxResults": min(50, max(limit, 10)),
-                    "q": f"{query} -shorts -tiktok -billboard -top10 -top20 -top50 -top100 -recap -countdown -ranking",
-                    "key": key,
-                }
+                if pool == "search":
+                    params = {
+                        "part": "snippet",
+                        "type": "video",
+                        "videoEmbeddable": "true",
+                        "maxResults": min(50, max(limit, 10)),
+                        "q": query.strip(),
+                        "key": key,
+                    }
+                else:
+                    params = {
+                        "part": "snippet",
+                        "type": "video",
+                        "videoCategoryId": "10",
+                        "videoEmbeddable": "true",
+                        "maxResults": min(50, max(limit, 10)),
+                        "q": f"{query} -shorts -tiktok -billboard -top10 -top20 -top50 -top100 -recap -countdown -ranking",
+                        "key": key,
+                    }
                 if page_token and not page_token.startswith("offset:"):
                     params["pageToken"] = page_token
 
@@ -1000,9 +1010,6 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
                 # Skip non-embeddable videos — these cause YouTube error 101/150 in the player
                 if detail and status_info.get("embeddable") is False:
                     continue
-                if detail.get("snippet", {}).get("categoryId") and detail.get("snippet", {}).get("categoryId") != "10":
-                    continue
-
                 d_snippet = detail.get("snippet", {}) if isinstance(detail, dict) else {}
                 raw_title = d_snippet.get("title") or snippet.get("title", "")
                 channel = (
@@ -1014,17 +1021,20 @@ def search_youtube_api_pool(query: str, limit: int = 25, base_url: str = "", pag
                 )
                 desc = d_snippet.get("description") or snippet.get("description", "")
                 published_at = d_snippet.get("publishedAt") or snippet.get("publishedAt")
-
-                if is_blacklisted_media(raw_title, channel, desc):
-                    continue
-
-                # Parse duration
                 dur_iso = content_details.get("duration", "")
                 duration = parse_iso8601_duration(dur_iso)
 
-                # Filter duration (60s to 480s bounds when duration is known)
-                if duration > 0 and (duration < 60 or duration > 480):
-                    continue
+                if pool != "search":
+                    if detail.get("snippet", {}).get("categoryId") and detail.get("snippet", {}).get("categoryId") != "10":
+                        continue
+                    if is_blacklisted_media(raw_title, channel, desc):
+                        continue
+                    if duration > 0 and (duration < 60 or duration > 480):
+                        continue
+                else:
+                    # Broad Search: only skip explicit vertical shorts
+                    if is_shorts_media(raw_title, desc, duration):
+                        continue
 
                 # Thumbnail selection
                 thumbnails = (detail.get("snippet", {}).get("thumbnails") or snippet.get("thumbnails") or {})
@@ -1992,21 +2002,21 @@ def stream_audio():
             return redirect(audio_url, code=302)
 
         # 3. Server-side Stream Proxying (Never 302 redirect directly to googlevideo.com)
-        # YouTube CDN rejects open-ended ranges (e.g. bytes=0-) or un-ranged requests with 403 Forbidden.
-        # Clamp to bounded 1MB chunks to ensure consistent HTTP 206 Partial Content responses.
+        # Support full continuous streaming and browser Range requests without artificial 1MB truncations.
         range_header = request.headers.get("Range")
-        chunk_size = 1048576  # 1 MB chunk
         if range_header:
             match = re.match(r"bytes=(\d+)-(\d*)", range_header)
             if match:
                 start = int(match.group(1)) if match.group(1) else 0
                 client_end = int(match.group(2)) if match.group(2) else None
-                end = min(client_end, start + chunk_size - 1) if client_end is not None else start + chunk_size - 1
-                upstream_range = f"bytes={start}-{end}"
+                if client_end is not None:
+                    upstream_range = f"bytes={start}-{client_end}"
+                else:
+                    upstream_range = f"bytes={start}-"
             else:
-                upstream_range = f"bytes=0-{chunk_size - 1}"
+                upstream_range = range_header
         else:
-            upstream_range = f"bytes=0-{chunk_size - 1}"
+            upstream_range = "bytes=0-"
 
         upstream_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

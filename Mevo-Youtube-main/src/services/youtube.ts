@@ -18,6 +18,7 @@ import {
   validateSonicWorldTrack,
 } from "../lib/youtube-discovery.ts";
 import { getFromApiCache, setInApiCache, API_CACHE_TTL } from "./apiCacheService.ts";
+import { rankSearchResults } from "./searchRanker.ts";
 
 export interface YouTubeSearchResult {
   id: string;
@@ -1696,7 +1697,7 @@ export async function searchYouTubePaginated(
       const res = await fetch(endpoint);
       if (res.ok) {
         const data = await res.json();
-        const results: YouTubeSearchResult[] = (data.items || [])
+        const rawResults: YouTubeSearchResult[] = (data.items || [])
           .map((item: any) => ({
             id: item.id,
             title: decodeHtmlEntities(item.title || ""),
@@ -1708,14 +1709,29 @@ export async function searchYouTubePaginated(
             publishedAt: item.publishedAt,
             duration: item.duration,
             viewCount: item.viewCount || item.view_count || 0,
-          }))
-          .filter((item: YouTubeSearchResult) =>
-            isMusicContent(item.title, item.channel, item.description, item.duration || 0) &&
-            !isShortsVideo(item.title, item.description || "", item.duration || 0)
-          )
-          .sort((a: YouTubeSearchResult, b: YouTubeSearchResult) => getOfficialContentScore(b.channel, b.title) - getOfficialContentScore(a.channel, a.title));
+          }));
 
-        const deduped = deduplicateYouTubeTracks(results).slice(0, maxResults);
+        let deduped: YouTubeSearchResult[];
+        if (pool === "search") {
+          // Dedicated Search pipeline:
+          // 1. Broad filter: only drop empty titles/IDs or vertical shorts
+          const searchFiltered = rawResults.filter((item) => {
+            if (!item.id || !item.title) return false;
+            if (isShortsVideo(item.title, item.description || "", item.duration || 0)) return false;
+            return true;
+          });
+          // 2. Search-only ranking layer: original first, variants retained, deduplicated by video ID only
+          deduped = rankSearchResults(trimmed, searchFiltered).slice(0, maxResults);
+        } else {
+          // Home sections / Discovery: 100% existing pipeline unchanged
+          const filtered = rawResults
+            .filter((item: YouTubeSearchResult) =>
+              isMusicContent(item.title, item.channel, item.description, item.duration || 0) &&
+              !isShortsVideo(item.title, item.description || "", item.duration || 0)
+            )
+            .sort((a: YouTubeSearchResult, b: YouTubeSearchResult) => getOfficialContentScore(b.channel, b.title) - getOfficialContentScore(a.channel, a.title));
+          deduped = deduplicateYouTubeTracks(filtered).slice(0, maxResults);
+        }
         const searchResult: PaginatedYouTubeSearchResults = {
           items: deduped,
           nextPageToken: data.nextPageToken || null,

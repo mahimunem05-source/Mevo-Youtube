@@ -267,6 +267,60 @@ export function getYouTubeStreamUrl(videoIdOrUrl: string): string {
   return `${baseUrl}/stream?id=${encodeURIComponent(videoId || videoIdOrUrl)}`;
 }
 
+/**
+ * Resolves an audio stream URL for playback.
+ * - In local development (import.meta.env.DEV), relative URLs ("/stream?id=...") are preserved
+ *   so they route through Vite's local devYouTubePlugin middleware.
+ * - In production, any relative stream URL ("/stream...", "/api/stream...") or localhost URL
+ *   is resolved to the production extractor backend (e.g. https://mevo-extractor.onrender.com).
+ * - If a raw video ID is provided, returns the stream URL.
+ */
+export function resolveAudioStreamUrl(rawUrlOrId: string | null | undefined): string {
+  if (!rawUrlOrId) return "";
+  const trimmed = rawUrlOrId.trim();
+  if (!trimmed || trimmed === "about:blank") return "";
+
+  const metaEnv = (
+    typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {}
+  ) as Record<string, string | undefined>;
+  const isDev =
+    Boolean(metaEnv.DEV) ||
+    (typeof window !== "undefined" &&
+      (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) ||
+    (typeof window === "undefined" && typeof process !== "undefined" && process.env?.NODE_ENV !== "production");
+
+  // If it's already a full remote HTTP/HTTPS URL:
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    // In production, if it accidentally points to localhost or 127.0.0.1, re-route to production extractor
+    if (!isDev && (trimmed.includes("localhost") || trimmed.includes("127.0.0.1"))) {
+      const vid = extractYouTubeVideoId(trimmed);
+      if (vid) {
+        return getYouTubeStreamUrl(vid);
+      }
+    }
+    return trimmed;
+  }
+
+  // If it starts with "/" (relative path like /stream?id=... or /api/stream?id=...)
+  if (trimmed.startsWith("/")) {
+    if (isDev) {
+      // Keep exact relative path in dev mode so localhost uses devYouTubePlugin()
+      return trimmed;
+    }
+    // In production, prepend production extractor base URL
+    const baseUrl = getExtractorBaseUrl();
+    return `${baseUrl}${trimmed}`;
+  }
+
+  // If it's a video ID (e.g. yt-xxx or xxx)
+  const vid = extractYouTubeVideoId(trimmed);
+  if (vid) {
+    return getYouTubeStreamUrl(vid);
+  }
+
+  return trimmed;
+}
+
 export function getYouTubeDownloadUrl(videoIdOrUrl: string): string {
   const baseUrl = getExtractorBaseUrl();
   const videoId = extractYouTubeVideoId(videoIdOrUrl);

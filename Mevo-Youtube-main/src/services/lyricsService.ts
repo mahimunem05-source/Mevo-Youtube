@@ -556,6 +556,8 @@ async function fetchFromBackendLyrics(params: {
   return null;
 }
 
+import { isBanglaSong, alignBanglaSongLyrics } from "./banglaLyricAligner.ts";
+
 // ---------------------------------------------------------------------------
 // 8. Master Lyrics Pipeline with Multi-Tier Fallback & Persistent Storage
 // ---------------------------------------------------------------------------
@@ -564,9 +566,19 @@ export async function fetchSongLyrics(song: {
   title: string;
   artist: string;
   duration?: number;
+  audio?: string;
+  section?: string;
+  category?: string;
+  language?: string;
 }): Promise<LyricsResult | null> {
   if (!song || !song.id) return null;
 
+  // 0. Dedicated Isolated Bangla Alignment Pipeline (all audio sources)
+  if (isBanglaSong(song)) {
+    return alignBanglaSongLyrics(song);
+  }
+
+  // --- EXISTING PIPELINE 100% UNCHANGED FOR HINDI / ENGLISH / OTHER ---
   const cacheKey = song.id.replace(/^yt-/, "").trim();
 
   // 1. In-Memory Cache Check

@@ -813,7 +813,7 @@ function SongPage() {
                       BEAT STATUS
                     </p>
                     <p className="mt-1 text-sm font-extrabold text-white">
-                      {playing ? "In Sync • 60 FPS" : "Standby"}
+                      {playing ? "LIVE • 60 FPS" : "Standby"}
                     </p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-center">

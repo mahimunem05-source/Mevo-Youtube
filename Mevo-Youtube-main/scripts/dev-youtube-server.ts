@@ -14,6 +14,13 @@ import {
   validateSonicWorldTrack,
 } from "../src/lib/youtube-discovery.ts";
 import { extractCoreSongRoot, isSameCoreSong } from "../src/services/youtube.ts";
+import { rankSearchResults } from "../src/services/searchRanker.ts";
+
+if (typeof process !== "undefined" && typeof process.on === "function") {
+  process.on("unhandledRejection", (reason: any) => {
+    console.warn("[Vite Dev YouTube] Handled background rejection in dev server:", reason?.message || reason);
+  });
+}
 
 interface CacheEntry<T> {
   data: T;
@@ -678,8 +685,9 @@ export function devYouTubePlugin(): Plugin {
     apply: "serve",
     configureServer(server: ViteDevServer) {
       server.middlewares.use(async (req, res, next) => {
-        const urlObj = new URL(req.url || "/", "http://localhost");
-        const pathname = urlObj.pathname;
+        try {
+          const urlObj = new URL(req.url || "/", "http://localhost");
+          const pathname = urlObj.pathname;
 
         // 1. /api/youtube/trending (Pool A: Song Discovery)
         if (pathname === "/api/youtube/trending" || pathname === "/api/trending") {
@@ -1123,8 +1131,10 @@ export function devYouTubePlugin(): Plugin {
             const searchLimit = Math.min(50, Math.max(limit * 2, 25));
             const data = await fetchWithKey(
               targetPool,
-              (key) =>
-                `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&videoEmbeddable=true&videoSyndicated=true&maxResults=${searchLimit}${pageParam}&key=${key}`
+              (key) => {
+                const catParam = targetPool === "discovery" ? "&videoCategoryId=10" : "";
+                return `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video${catParam}&videoEmbeddable=true&videoSyndicated=true&maxResults=${searchLimit}${pageParam}&key=${key}`;
+              }
             );
             const videoIds = (data.items || []).map((it: any) => it.id?.videoId).filter(Boolean);
             const snippetMap = new Map<string, any>();
@@ -1164,7 +1174,24 @@ export function devYouTubePlugin(): Plugin {
                   description: desc,
                 };
               })
-              .filter((it: any) => {
+            let items: any[];
+            if (targetPool === "search") {
+              const searchFiltered = rawItems.filter((it: any) => {
+                if (it.embeddable === false || it.isMadeForKids) return false;
+                if (isShortsVideo(it.title, it.description, it.duration)) return false;
+                return true;
+              });
+              // Deduplicate strictly by exact video ID
+              const seen = new Set<string>();
+              const uniqueSearchItems: any[] = [];
+              for (const it of searchFiltered) {
+                if (!it.id || seen.has(it.id)) continue;
+                seen.add(it.id);
+                uniqueSearchItems.push(it);
+              }
+              items = rankSearchResults(query, uniqueSearchItems).slice(0, limit);
+            } else {
+              const discFiltered = rawItems.filter((it: any) => {
                 if (it.embeddable === false || it.isMadeForKids) return false;
                 if (it.duration > 0 && (it.duration < 60 || it.duration > 480)) return false;
                 if (isShortsVideo(it.title, it.description, it.duration)) return false;
@@ -1172,28 +1199,29 @@ export function devYouTubePlugin(): Plugin {
                 return true;
               });
 
-            rawItems.sort((a: any, b: any) => a.viewCount - b.viewCount);
-            const total = rawItems.length;
-            const scoredItems = rawItems.map((it: any, idx: number) => {
-              const percentile = total > 1 ? idx / (total - 1) : 0.8;
-              const { totalScore } = calculateCuratedTrackScore(
-                {
-                  title: it.title,
-                  artist: it.artist,
-                  channelTitle: it.artist,
-                  publishedAt: it.publishedAt,
-                  viewCount: it.viewCount,
-                  duration: it.duration,
-                },
-                percentile,
-                0.8
-              );
-              return { ...it, score: totalScore };
-            });
+              discFiltered.sort((a: any, b: any) => a.viewCount - b.viewCount);
+              const total = discFiltered.length;
+              const scoredItems = discFiltered.map((it: any, idx: number) => {
+                const percentile = total > 1 ? idx / (total - 1) : 0.8;
+                const { totalScore } = calculateCuratedTrackScore(
+                  {
+                    title: it.title,
+                    artist: it.artist,
+                    channelTitle: it.artist,
+                    publishedAt: it.publishedAt,
+                    viewCount: it.viewCount,
+                    duration: it.duration,
+                  },
+                  percentile,
+                  0.8
+                );
+                return { ...it, score: totalScore };
+              });
 
-            scoredItems.sort((a: any, b: any) => b.score - a.score);
-            const dedupedItems = deduplicateCandidatePool(scoredItems);
-            const items = dedupedItems.slice(0, limit);
+              scoredItems.sort((a: any, b: any) => b.score - a.score);
+              const dedupedItems = deduplicateCandidatePool(scoredItems);
+              items = dedupedItems.slice(0, limit);
+            }
 
             const result = { items, count: items.length, nextPageToken: data.nextPageToken || null, source: "youtube_api", query, pool: targetPool };
             cache.set(cacheKey, result, 72000); // 20 hour TTL
@@ -1727,7 +1755,16 @@ export function devYouTubePlugin(): Plugin {
         }
 
         next();
-      });
+      } catch (middlewareErr: any) {
+        console.error("[Vite Dev YouTube] Middleware unhandled error:", middlewareErr?.message || middlewareErr);
+        if (!res.headersSent && !res.writableEnded) {
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          res.end(JSON.stringify({ error: "Internal dev middleware error", message: middlewareErr?.message }));
+        }
+      }
+    });
     },
   };
 }

@@ -335,37 +335,55 @@ function multiTry(generators: any[]) {
 }
 
 function solveChallenges(input: any) {
-  const preprocessedPlayer =
-    input.type === "player"
-      ? preprocessPlayer(input.player)
-      : input.preprocessed_player;
-  const solvers = getFromPrepared(preprocessedPlayer);
-  const responses = input.requests.map((req: any) => {
-    if (!isOneOf(req.type, "n", "sig")) {
-      return { type: "error", error: `Unknown request type: ${req.type}` };
+  try {
+    const preprocessedPlayer =
+      input.type === "player"
+        ? preprocessPlayer(input.player)
+        : input.preprocessed_player;
+    const solvers = getFromPrepared(preprocessedPlayer);
+    if (!solvers) {
+      return { type: "error", error: "Failed to load solvers", responses: [] };
     }
-    const solver = (solvers as Record<string, any>)[req.type];
-    if (!solver) {
-      return { type: "error", error: `Failed to extract ${req.type} function` };
-    }
-    try {
-      return {
-        type: "result",
-        data: Object.fromEntries(
-          req.challenges.map((challenge: string) => [
-            challenge,
-            solver(challenge),
-          ])
-        ),
-      };
-    } catch (error: any) {
-      return {
-        type: "error",
-        error: error instanceof Error ? `${error.message}` : `${error}`,
-      };
-    }
-  });
-  return { type: "result", responses };
+    const responses = (input.requests || []).map((req: any) => {
+      if (!isOneOf(req.type, "n", "sig")) {
+        return { type: "error", error: `Unknown request type: ${req.type}` };
+      }
+      const solver = (solvers as Record<string, any>)[req.type];
+      if (!solver || typeof solver !== "function") {
+        return { type: "error", error: `Failed to extract ${req.type} function` };
+      }
+      try {
+        const solvedEntries: [string, string][] = [];
+        for (const challenge of req.challenges || []) {
+          try {
+            const res = solver(challenge);
+            if (res && typeof res.catch === "function") {
+              res.catch(() => {});
+            }
+            if (typeof res === "string") {
+              solvedEntries.push([challenge, res]);
+            } else {
+              solvedEntries.push([challenge, challenge]);
+            }
+          } catch {
+            solvedEntries.push([challenge, challenge]);
+          }
+        }
+        return {
+          type: "result",
+          data: Object.fromEntries(solvedEntries),
+        };
+      } catch (error: any) {
+        return {
+          type: "error",
+          error: error instanceof Error ? `${error.message}` : `${error}`,
+        };
+      }
+    });
+    return { type: "result", responses };
+  } catch (outerErr: any) {
+    return { type: "error", error: outerErr?.message || "Solver error", responses: [] };
+  }
 }
 
 let lastKnownJsUrl = "https://www.youtube.com/s/player/8c3fda2d/player-plasma-es6-bn_BD.vflset/base.js";

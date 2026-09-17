@@ -295,7 +295,8 @@ export function QueueList({ song }: { song: Song }) {
           <p className="text-xs">No songs in queue.</p>
         </div>
       ) : (
-        <ul className="space-y-2">
+        <div className="max-h-[46vh] sm:max-h-[50vh] lg:max-h-none overflow-y-auto lg:overflow-visible overscroll-contain pr-1.5 -mr-1 scroll-smooth touch-pan-y [webkit-overflow-scrolling:touch] [scrollbar-width:thin] [scrollbar-color:rgba(79,209,197,0.3)_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-teal-500/30 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-teal-500/50">
+          <ul className="space-y-2 pb-1">
           {queue.map((track, index) => {
             const active = currentIndex === index && current?.id === track.id;
             const menuOpen = openMenuIndex === index;
@@ -449,7 +450,6 @@ export function QueueList({ song }: { song: Song }) {
             );
           })}
         </ul>
-      )}
 
       {/* "Load more" Button & End of Catalog Indicator */}
       <div className="mt-3 pt-1">
@@ -495,6 +495,8 @@ export function QueueList({ song }: { song: Song }) {
           )
         )}
       </div>
+    </div>
+  )}
 
       {/* Confirmation Dialog for Clearing Queue */}
       <ConfirmDialog

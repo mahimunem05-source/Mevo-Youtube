@@ -21,7 +21,7 @@ export const BeatChickCard = memo(function BeatChickCard({
 }: BeatChickCardProps) {
   // Dual-source lyrics query (LRCLIB -> YouTube Closed Captions fallback)
   const lyricsQuery = useQuery({
-    queryKey: ["song-lyrics", song?.id, song?.title, song?.artist],
+    queryKey: ["song-lyrics", song?.id, song?.title, song?.artist, song?.audio, Math.round(song?.duration || 0)],
     queryFn: () => (song ? fetchSongLyrics(song) : null),
     enabled: Boolean(song && song.id),
     staleTime: 1000 * 60 * 30,
@@ -72,7 +72,7 @@ export const BeatChickCard = memo(function BeatChickCard({
               </span>
               <span className="inline-flex items-center gap-0.5 rounded-full bg-teal-400/15 px-1.5 py-0.2 text-[8px] font-bold text-teal-300 border border-teal-400/20">
                 {hasLyrics ? (
-                  <span>{lyrics?.source === "aligned" ? "ALIGNED" : lyrics?.source === "youtube_captions" ? "CC" : "SYNCED"}</span>
+                  <span>{lyrics?.source === "aligned" ? "ALIGNED" : lyrics?.source === "youtube_captions" ? "CC" : "LYRICS"}</span>
                 ) : (
                   <>
                     <Sparkles className="size-2 text-teal-300" />
@@ -82,7 +82,7 @@ export const BeatChickCard = memo(function BeatChickCard({
               </span>
             </div>
             <p className="truncate text-[9px] font-medium text-teal-400/80">
-              {hasLyrics ? (lyrics?.source === "aligned" ? "Audio-aligned lyrics" : "Real-time synced lyrics") : "Feel the beat, feel the vibe!"}
+              {hasLyrics ? (lyrics?.source === "aligned" ? "Audio-aligned lyrics" : "Lyrics for this track") : "Feel the beat, feel the vibe!"}
             </p>
           </div>
         </div>
@@ -124,11 +124,11 @@ export const BeatChickCard = memo(function BeatChickCard({
             )}
           />
           <span className="font-semibold text-white/70">
-            {hasLyrics ? "Click any line to seek" : isPlaying ? "3-Band Web Audio Engine Active" : "Waiting for next beat"}
+            {hasLyrics ? "LYRIC STREAM" : isPlaying ? "3-Band Web Audio Engine Active" : "Waiting for next beat"}
           </span>
         </span>
         <span className="text-teal-400/80 font-medium text-[9px] tracking-wide">
-          {hasLyrics ? "Interactive Lyrics" : "Bass • Vocals • Treble"}
+          {hasLyrics ? "MEVO • AUDIO" : "Bass • Vocals • Treble"}
         </span>
       </div>
     </div>

@@ -24,7 +24,7 @@ import { playbackEvents } from "@/lib/playback-events";
 import { startEngagementTracking } from "@/lib/ranking/engagement-tracker";
 import { createUniversalSmartQueue, generateDiscoveryQueue } from "@/lib/ranking/queue-engine";
 import { useSettings } from "@/context/SettingsContext";
-import { getYouTubeStreamUrl, extractYouTubeVideoId } from "@/lib/extractor";
+import { getYouTubeStreamUrl, extractYouTubeVideoId, resolveAudioStreamUrl } from "@/lib/extractor";
 import { getDeviceId } from "@/utils/device";
 import { youtubePlayerBridge } from "@/lib/youtube-player-bridge";
 import { getRelatedTracks } from "@/lib/youtube-api";
@@ -752,8 +752,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const audio = audioRef.current;
       if (!audio || !song) return;
 
-      let audioSrc = song.audio;
-      if (!audioSrc || (!audioSrc.startsWith("http") && !audioSrc.startsWith("/"))) {
+      let audioSrc = resolveAudioStreamUrl(song.audio);
+      if (!audioSrc) {
         const vid = extractYouTubeVideoId(song.id);
         if (vid) {
           audioSrc = getYouTubeStreamUrl(vid);
@@ -1641,8 +1641,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    let audioSrc = current.audio;
-    if (!audioSrc || (!audioSrc.startsWith("http") && !audioSrc.startsWith("/"))) {
+    let audioSrc = resolveAudioStreamUrl(current.audio);
+    if (!audioSrc) {
       const vid = extractYouTubeVideoId(current.id);
       if (vid) {
         audioSrc = getYouTubeStreamUrl(vid);
@@ -2049,14 +2049,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                 if (streamRetryTimeoutRef.current) clearTimeout(streamRetryTimeoutRef.current);
                 streamRetryTimeoutRef.current = setTimeout(() => {
                   if (audioRef.current && currentRef.current?.id === failedSong.id) {
-                    let freshSrc = failedSong.audio;
-                    if (!freshSrc || (!freshSrc.startsWith("http") && !freshSrc.startsWith("/"))) {
+                    let freshSrc = resolveAudioStreamUrl(failedSong.audio);
+                    if (!freshSrc) {
                       const vid = extractYouTubeVideoId(failedSong.id);
                       if (vid) freshSrc = getYouTubeStreamUrl(vid);
                     }
                     if (freshSrc) {
                       const separator = freshSrc.includes("?") ? "&" : "?";
-                      const retrySrc = `${freshSrc}${separator}_retry=${retries + 1}&_t=${Date.now()}`;
+                      const retrySrc = `${freshSrc}${separator}refresh=1&_retry=${retries + 1}&_t=${Date.now()}`;
                       audioRef.current.src = retrySrc;
                       audioRef.current.currentTime = resumeTime;
                       audioRef.current.load();
