@@ -41,7 +41,13 @@ function getSafeString(val: unknown, fallback = ""): string {
   return val ? String(val) : fallback;
 }
 
-export function QueueList({ song }: { song: Song }) {
+export function QueueList({
+  song,
+  isMobile = false,
+}: {
+  song: Song;
+  isMobile?: boolean;
+}) {
   const {
     queue,
     currentIndex,
@@ -271,73 +277,50 @@ export function QueueList({ song }: { song: Song }) {
     }
   };
 
-  return (
-    <aside aria-label="Up next playback queue" className="w-full">
-      {/* Header: UP NEXT (left) | CLEAR (right) */}
-      <header className="mb-3 flex items-center justify-between">
-        <h2 className="text-[11px] font-extrabold uppercase tracking-[0.25em] text-teal-400/90 flex items-center gap-1.5">
-          <span>{t("player.upNext", "UP NEXT")}</span>
-        </h2>
-        {queue.length > 1 && (
-          <button
-            type="button"
-            onClick={() => setShowClearConfirm(true)}
-            className="text-[11px] font-extrabold uppercase tracking-[0.25em] text-teal-400/90 hover:text-teal-300 transition-colors cursor-pointer"
-          >
-            {t("player.clear", "CLEAR")}
-          </button>
-        )}
-      </header>
-
-      {queue.length === 0 ? (
-        <div className="py-8 text-center flex flex-col items-center justify-center gap-2 text-white/50">
-          <Music className="size-6 text-white/30" />
-          <p className="text-xs">No songs in queue.</p>
-        </div>
-      ) : (
-        <div className="max-h-[46vh] sm:max-h-[50vh] lg:max-h-none overflow-y-auto lg:overflow-visible overscroll-contain pr-1.5 -mr-1 scroll-smooth touch-pan-y [webkit-overflow-scrolling:touch] [scrollbar-width:thin] [scrollbar-color:rgba(79,209,197,0.3)_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-teal-500/30 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-teal-500/50">
+  const queueListContent = (
+    <>
           <ul className="space-y-2 pb-1">
-          {queue.map((track, index) => {
-            const active = currentIndex === index && current?.id === track.id;
-            const menuOpen = openMenuIndex === index;
-            const rawArtistVal =
-              track.artist ||
-              (track as any).channelTitle ||
-              (track as any).channel ||
-              (track as any).uploader ||
-              (track as any).videoOwnerChannelTitle ||
-              (track as any).author ||
-              "";
-            let artistStr = getSafeString(rawArtistVal, "");
-            let titleStr = getSafeString(track.title, "");
+            {queue.map((track, index) => {
+              const active = currentIndex === index && current?.id === track.id;
+              const menuOpen = openMenuIndex === index;
+              const rawArtistVal =
+                track.artist ||
+                (track as any).channelTitle ||
+                (track as any).channel ||
+                (track as any).uploader ||
+                (track as any).videoOwnerChannelTitle ||
+                (track as any).author ||
+                "";
+              let artistStr = getSafeString(rawArtistVal, "");
+              let titleStr = getSafeString(track.title, "");
 
-            if (!artistStr || artistStr === "Unknown Artist" || artistStr === "YouTube Artist") {
-              if (titleStr) {
-                const parsed = cleanYouTubeTitle(titleStr, "");
-                if (parsed.artist && parsed.artist !== "YouTube Artist" && parsed.artist !== "Unknown Artist") {
-                  artistStr = parsed.artist;
-                  titleStr = parsed.title;
+              if (!artistStr || artistStr === "Unknown Artist" || artistStr === "YouTube Artist") {
+                if (titleStr) {
+                  const parsed = cleanYouTubeTitle(titleStr, "");
+                  if (parsed.artist && parsed.artist !== "YouTube Artist" && parsed.artist !== "Unknown Artist") {
+                    artistStr = parsed.artist;
+                    titleStr = parsed.title;
+                  }
                 }
               }
-            }
-            if (!artistStr) {
-              artistStr = "YouTube Artist";
-            }
-            if (!titleStr) {
-              titleStr = "Untitled Track";
-            }
+              if (!artistStr) {
+                artistStr = "YouTube Artist";
+              }
+              if (!titleStr) {
+                titleStr = "Untitled Track";
+              }
 
-            return (
-              <motion.li
-                key={`${track.id}-${index}`}
-                ref={active ? activeRowRef : undefined}
-                layout
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: Math.min(index * 0.02, 0.2) }}
-                className="relative"
-              >
-                <div
+              return (
+                <motion.li
+                  key={`${track.id}-${index}`}
+                  ref={active ? activeRowRef : undefined}
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: Math.min(index * 0.02, 0.2) }}
+                  className="relative"
+                >
+                  <div
                   className={cn(
                     "group relative flex w-full items-center rounded-xl p-2 transition-all duration-200",
                     active ? "bg-[#182227] border border-[#4FD1C5]/40" : "hover:bg-white/[0.05]",
@@ -400,103 +383,134 @@ export function QueueList({ song }: { song: Song }) {
                     <EllipsisVertical className="size-4" />
                   </button>
 
-                  {/* Options Dropdown */}
-                  <AnimatePresence>
-                    {menuOpen && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.95, y: -4 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95, y: -4 }}
-                        transition={{ duration: 0.15 }}
-                        className="absolute right-2 top-12 z-50 min-w-36 rounded-xl bg-[#182227] border border-[#4FD1C5]/30 p-1.5 shadow-2xl"
-                      >
-                        <button
-                          type="button"
-                          disabled={index === 0}
-                          onClick={() => {
-                            reorderQueue(index, index - 1);
-                            setOpenMenuIndex(null);
-                          }}
-                          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-40"
+                    {/* Options Dropdown */}
+                    <AnimatePresence>
+                      {menuOpen && (
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.95, y: -4 }}
+                          animate={{ opacity: 1, scale: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+                          transition={{ duration: 0.15 }}
+                          className="absolute right-2 top-12 z-50 min-w-36 rounded-xl bg-[#182227] border border-[#4FD1C5]/30 p-1.5 shadow-2xl"
                         >
-                          <ChevronUp className="size-3.5 text-teal-400" /> Move Up
-                        </button>
-                        <button
-                          type="button"
-                          disabled={index === queue.length - 1}
-                          onClick={() => {
-                            reorderQueue(index, index + 1);
-                            setOpenMenuIndex(null);
-                          }}
-                          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-40"
-                        >
-                          <ChevronDown className="size-3.5 text-teal-400" /> Move Down
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            removeFromQueue(index);
-                            setOpenMenuIndex(null);
-                          }}
-                          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-500/10"
-                        >
-                          <Trash2 className="size-3.5" /> Remove
-                        </button>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              </motion.li>
-            );
-          })}
-        </ul>
+                          <button
+                            type="button"
+                            disabled={index === 0}
+                            onClick={() => {
+                              reorderQueue(index, index - 1);
+                              setOpenMenuIndex(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-40"
+                          >
+                            <ChevronUp className="size-3.5 text-teal-400" /> Move Up
+                          </button>
+                          <button
+                            type="button"
+                            disabled={index === queue.length - 1}
+                            onClick={() => {
+                              reorderQueue(index, index + 1);
+                              setOpenMenuIndex(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-40"
+                          >
+                            <ChevronDown className="size-3.5 text-teal-400" /> Move Down
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              removeFromQueue(index);
+                              setOpenMenuIndex(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-500/10"
+                          >
+                            <Trash2 className="size-3.5" /> Remove
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </motion.li>
+              );
+            })}
+          </ul>
 
-      {/* "Load more" Button & End of Catalog Indicator */}
-      <div className="mt-3 pt-1">
-        {canLoadMore ? (
+          {/* "Load more" Button & End of Catalog Indicator */}
+          <div className="mt-3 pt-1">
+            {canLoadMore ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void handleLoadMore();
+                }}
+                disabled={isLoadingMore}
+                className="w-full py-2.5 my-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium text-gray-300 hover:text-white transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {isLoadingMore ? (
+                  <>
+                    <LoaderCircle className="w-4 h-4 animate-spin text-[#00F0FF]" />
+                    <span>Loading...</span>
+                  </>
+                ) : (
+                  <>
+                    <Music className="w-4 h-4 text-[#00F0FF]" />
+                    <span>Load more</span>
+                  </>
+                )}
+              </button>
+            ) : (
+              queue.length > 0 && (
+                <div className="text-center py-2.5 space-y-1">
+                  {isMahiSelect ? (
+                    <p className="text-[11px] font-semibold text-teal-400/70 tracking-wide uppercase">
+                      ✦ Mahi Select • {queue.length} Tracks
+                    </p>
+                  ) : isCustomPlaylist ? (
+                    <p className="text-[11px] font-semibold text-teal-400/70 tracking-wide uppercase">
+                      ✦ {queueSource?.title || "Custom Album"} • {queue.length} {queue.length === 1 ? "Track" : "Tracks"}
+                    </p>
+                  ) : null}
+                  <p className="text-xs text-white/40 italic font-medium">
+                    You've reached the end of the catalog
+                  </p>
+                </div>
+              )
+            )}
+          </div>
+    </>
+  );
+
+  return (
+    <aside aria-label="Up next playback queue" className="w-full">
+      {/* Header: UP NEXT (left) | CLEAR (right) */}
+      <header className="mb-3 flex items-center justify-between">
+        <h2 className="text-[11px] font-extrabold uppercase tracking-[0.25em] text-teal-400/90 flex items-center gap-1.5">
+          <span>{t("player.upNext", "UP NEXT")}</span>
+        </h2>
+        {queue.length > 1 && (
           <button
             type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              void handleLoadMore();
-            }}
-            disabled={isLoadingMore}
-            className="w-full py-2.5 my-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium text-gray-300 hover:text-white transition-all flex items-center justify-center gap-2 cursor-pointer"
+            onClick={() => setShowClearConfirm(true)}
+            className="text-[11px] font-extrabold uppercase tracking-[0.25em] text-teal-400/90 hover:text-teal-300 transition-colors cursor-pointer"
           >
-            {isLoadingMore ? (
-              <>
-                <LoaderCircle className="w-4 h-4 animate-spin text-[#00F0FF]" />
-                <span>Loading...</span>
-              </>
-            ) : (
-              <>
-                <Music className="w-4 h-4 text-[#00F0FF]" />
-                <span>Load more</span>
-              </>
-            )}
+            {t("player.clear", "CLEAR")}
           </button>
-        ) : (
-          queue.length > 0 && (
-            <div className="text-center py-2.5 space-y-1">
-              {isMahiSelect ? (
-                <p className="text-[11px] font-semibold text-teal-400/70 tracking-wide uppercase">
-                  ✦ Mahi Select • {queue.length} Tracks
-                </p>
-              ) : isCustomPlaylist ? (
-                <p className="text-[11px] font-semibold text-teal-400/70 tracking-wide uppercase">
-                  ✦ {queueSource?.title || "Custom Album"} • {queue.length} {queue.length === 1 ? "Track" : "Tracks"}
-                </p>
-              ) : null}
-              <p className="text-xs text-white/40 italic font-medium">
-                You've reached the end of the catalog
-              </p>
-            </div>
-          )
         )}
-      </div>
-    </div>
-  )}
+      </header>
+
+      {queue.length === 0 ? (
+        <div className="py-8 text-center flex flex-col items-center justify-center gap-2 text-white/50">
+          <Music className="size-6 text-white/30" />
+          <p className="text-xs">No songs in queue.</p>
+        </div>
+      ) : isMobile ? (
+        <div className="max-h-[46vh] sm:max-h-[50vh] overflow-y-auto overscroll-y-auto pr-1.5 -mr-1 scroll-smooth touch-pan-y [webkit-overflow-scrolling:touch] [scrollbar-width:thin] [scrollbar-color:rgba(79,209,197,0.3)_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-teal-500/30 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-teal-500/50">
+          {queueListContent}
+        </div>
+      ) : (
+        queueListContent
+      )}
 
       {/* Confirmation Dialog for Clearing Queue */}
       <ConfirmDialog

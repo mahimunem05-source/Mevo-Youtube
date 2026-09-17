@@ -49,6 +49,37 @@ function writeMap(map: ScrollMap) {
   }
 }
 
+let memoryScrollMap: ScrollMap | null = null;
+let flushTimer: number | null = null;
+
+function getMemoryMap(): ScrollMap {
+  if (!memoryScrollMap) {
+    memoryScrollMap = readMap();
+  }
+  return memoryScrollMap;
+}
+
+function flushMapNow() {
+  if (typeof window === "undefined") return;
+  if (flushTimer !== null) {
+    window.clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (memoryScrollMap) {
+    writeMap(memoryScrollMap);
+  }
+}
+
+function scheduleMapFlush() {
+  if (typeof window === "undefined" || flushTimer !== null) return;
+  flushTimer = window.setTimeout(() => {
+    flushTimer = null;
+    if (memoryScrollMap) {
+      writeMap(memoryScrollMap);
+    }
+  }, 250);
+}
+
 function locationKey() {
   return window.location.pathname + window.location.search + window.location.hash;
 }
@@ -62,13 +93,14 @@ function containerKey(key: string, containerId: string) {
 }
 
 function saveValue(key: string, value: number) {
-  const map = readMap();
+  const map = getMemoryMap();
+  if (map[key] === value) return;
   map[key] = value;
-  writeMap(map);
+  scheduleMapFlush();
 }
 
 function getValue(key: string): number | undefined {
-  return readMap()[key];
+  return getMemoryMap()[key];
 }
 
 function getScrollContainers(): NodeListOf<HTMLElement> {
@@ -200,23 +232,27 @@ export function useScrollRestoration() {
 
       // The new route's data (song lists, etc.) can still be loading
       // async, which changes page height after our first attempt — so we
-      // nudge the scroll position back into place across several frames,
-      // with a couple of longer-delay backups for slow image loads.
+      // nudge the scroll position back into place with cached container lookup.
       let attempts = 0;
       let raf = 0;
+      let cachedContainers: HTMLElement[] | null = null;
 
       const applyOnce = () => {
         if (targetWindowY !== undefined) {
           window.scrollTo({ top: targetWindowY, left: 0, behavior: "auto" });
         }
-        getScrollContainers().forEach((el) => {
+        if (!cachedContainers) {
+          cachedContainers = Array.from(getScrollContainers());
+        }
+        for (let i = 0; i < cachedContainers.length; i++) {
+          const el = cachedContainers[i];
           const id = el.getAttribute(CONTAINER_ATTR);
-          if (!id) return;
+          if (!id) continue;
           const targetX = getValue(containerKey(newKey, id));
-          if (targetX !== undefined) {
+          if (targetX !== undefined && Math.abs(el.scrollLeft - targetX) > 1) {
             el.scrollLeft = targetX;
           }
-        });
+        }
       };
 
       const tryRestore = () => {
@@ -226,7 +262,7 @@ export function useScrollRestoration() {
         const windowSettled =
           targetWindowY === undefined || Math.abs(window.scrollY - targetWindowY) <= 2;
 
-        if (attempts < 25 && !windowSettled) {
+        if (attempts < 12 && !windowSettled) {
           raf = requestAnimationFrame(tryRestore);
         }
       };
@@ -234,8 +270,8 @@ export function useScrollRestoration() {
       raf = requestAnimationFrame(tryRestore);
 
       // Late-loading images/content safety net.
-      const lateRetry1 = window.setTimeout(applyOnce, 400);
-      const lateRetry2 = window.setTimeout(applyOnce, 900);
+      const lateRetry1 = window.setTimeout(applyOnce, 300);
+      const lateRetry2 = window.setTimeout(applyOnce, 700);
 
       const cleanupLate = () => {
         cancelAnimationFrame(raf);
@@ -274,8 +310,12 @@ export function useScrollRestoration() {
       handleNavigation(false);
     };
 
+    const handlePageFlush = () => flushMapNow();
+
     window.addEventListener("popstate", handlePopState);
     window.addEventListener("mahi:locationchange", handleLocationChange);
+    window.addEventListener("pagehide", handlePageFlush);
+    window.addEventListener("beforeunload", handlePageFlush);
 
     return () => {
       window.removeEventListener("scroll", handleWindowScroll);
@@ -284,9 +324,12 @@ export function useScrollRestoration() {
       });
       window.removeEventListener("popstate", handlePopState);
       window.removeEventListener("mahi:locationchange", handleLocationChange);
+      window.removeEventListener("pagehide", handlePageFlush);
+      window.removeEventListener("beforeunload", handlePageFlush);
       if (windowFrame !== null) cancelAnimationFrame(windowFrame);
       if (containerFrame !== null) cancelAnimationFrame(containerFrame);
       if (popWindowTimeout !== null) window.clearTimeout(popWindowTimeout);
+      flushMapNow();
     };
   }, []);
 }

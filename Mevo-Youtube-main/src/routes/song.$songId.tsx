@@ -601,7 +601,7 @@ function SongPage() {
 
         {/* 8. UP NEXT SECTION */}
         <section className="mt-3">
-          <QueueList song={song} />
+          <QueueList song={song} isMobile={true} />
         </section>
       </div>
 
@@ -828,7 +828,7 @@ function SongPage() {
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto py-4 pr-1">
-                <QueueList song={song} />
+                <QueueList song={song} isMobile={false} />
               </div>
             )}
           </div>

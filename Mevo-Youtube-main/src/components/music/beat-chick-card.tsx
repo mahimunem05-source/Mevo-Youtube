@@ -34,6 +34,8 @@ export const BeatChickCard = memo(function BeatChickCard({
 
   return (
     <div
+      id="beat-chick-card"
+      data-tour="lyrics"
       className={cn(
         "group relative overflow-hidden rounded-[16px] border border-[#243339] bg-[#0E1518]/90 p-3 shadow-[0_8px_24px_rgba(0,0,0,0.5)] backdrop-blur-md transition-all duration-200 select-none will-change-transform",
         className,
@@ -97,12 +99,12 @@ export const BeatChickCard = memo(function BeatChickCard({
       </div>
 
       {/* ── CARD MAIN VISUAL BODY (Multi-Band Visualizer + Center [Lyrics vs. Chick]) ─ */}
-      <div className="relative mt-2 flex h-32 sm:h-36 items-center justify-between px-2 overflow-hidden transition-all duration-300">
+      <div className={cn("relative mt-2 flex h-32 sm:h-36 items-center justify-between px-2 transition-all duration-300", hasLyrics ? "overflow-hidden" : "overflow-visible")}>
         {/* Left Multi-Band Visualizer (Bass / Vocal / Treble) */}
         <MultiBandVisualizer isPlaying={isPlaying} side="left" className="w-16 sm:w-20 shrink-0" />
 
         {/* Center: Synced Scrolling Lyrics OR Audio-Reactive Dancing Beat Chick */}
-        <div className="relative flex-1 h-full mx-2 flex items-center justify-center overflow-hidden">
+        <div className={cn("relative flex-1 h-full mx-2 flex items-center justify-center", hasLyrics ? "overflow-hidden" : "overflow-visible")}>
           {hasLyrics ? (
             <SyncedLyricsVisualizer lines={lyrics!.lines} className="size-full" />
           ) : (

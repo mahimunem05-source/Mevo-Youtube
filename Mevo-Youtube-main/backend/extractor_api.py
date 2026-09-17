@@ -2570,6 +2570,116 @@ def get_related_queue():
 # ---------------------------------------------------------------------------
 # Multi-Tier Lyrics & Audio-Guided Alignment API
 # ---------------------------------------------------------------------------
+_CREDIT_PREFIX_PAT = re.compile(
+    r"^(?:featuring|feat\.?|starring|cast|star\s*cast|actors?|actress(?:es)?|singers?|vocals?|vocalist|lead\s*vocals?|backing\s*vocals?|chorus\s*vocals?|music(?:\s*(?:by|director|composer|production))?|composed\s*by|composers?|lyrics(?:\s*by)?|lyricists?|written\s*by|songwriters?|produced\s*by|producers?|co-producers?|associate\s*producers?|executive\s*producers?|directed\s*by|directors?|choreographers?|choreography|dop|cinematograph(?:y|er)|editors?|edited\s*by|sound\s*(?:design(?:er)?|engineers?|recordist)|audio\s*engineers?|recording\s*engineers?|mix(?:ing|ed)?\s*engineers?|mixed\s*by|mastered\s*by|mix(?:ing|ed)?\s*(?:&|and)\s*master(?:ing|ed)?(?:\s*by)?|mastered\s*at|mixed\s*at|recorded\s*at|studios?|arrangers?|arranged\s*by|music\s*arrangers?|programmers?|programming|rhythm\s*programming|additional\s*(?:rhythm\s*)?programming|synth\s*programming|acoustic\s*programming|keyboards?\s*programming|special\s*thanks|courtesy|wardrobe|costumes?|stylist|styling|make-?up|hair(?:\s*stylist)?|publicity(?:\s*design)?|marketing|distribution|banner|production\s*house|record\s*label|music\s*label|audio\s*on|music\s*on|label|digital\s*partner|online\s*promotion|managed\s*by)\s*[:\-–—]",
+    re.IGNORECASE
+)
+
+_INSTRUMENT_CREDIT_PAT = re.compile(
+    r"^(?:(?:indian|western|acoustic|electric|additional|live|solo|rhythm|bass|lead)\s+)?(?:percussion(?:s)?|drums?|tabla|dholak|dhol|flutes?|bansuri|guitars?|bass(?:\s*guitar)?|strings?|violins?|viola|cello|sitars?|sarod|harmonium|shehnai|mandolin|banjo|ukulele|keyboards?|synths?|synthesizers?|piano|brass|horns?|sax(?:ophones?)?|trumpets?|mouth\s*organ|accordion|clarinets?)\s*(?:programming|players?|arrangements?|sections?)?\s*[-–—:]\s*[A-Za-z\u0900-\u097F\u0980-\u09FF]",
+    re.IGNORECASE
+)
+
+_STANDALONE_HEADING_PAT = re.compile(
+    r"^(?:sound\s*engineers?|recording\s*engineers?|mix(?:ing)?\s*engineers?|audio\s*credits?|music\s*credits?|video\s*credits?|movie\s*credits?|full\s*song\s*credits?|musicians?|actors?|starring|featuring|additional\s*rhythm\s*programming|music\s*team|instrument\s*credits?|rhythm\s*(?:&|and)\s*percussion|cast(?:\s*credits?)?|crew|production\s*credits?|original\s*credits?|remix\s*credits?)\s*[:\-–—]?$",
+    re.IGNORECASE
+)
+
+_METADATA_HEADER_PAT = re.compile(
+    r"^(?:movie|film|album|song|track|title|release\s*date|isrc|upc)\s*[:\-–—]\s*.+",
+    re.IGNORECASE
+)
+
+_PROMO_OR_LEGAL_PAT = re.compile(
+    r"(?:https?://|www\.|bit\.ly|youtu\.?be|spotify|apple\s*music|wynk|jiosaavn|gaana|amazon\s*music|audiomack|boomplay|subscribe|follow\s*us|follow\s*on|streaming\s*on|available\s*on|stream\s*now|download\s*now|ringtone|caller\s*tune|set\s*as\s*caller\s*tune|all\s*rights\s*reserved|©|℗)",
+    re.IGNORECASE
+)
+
+_LABEL_BRANDING_PAT = re.compile(
+    r"^(?:t-series|zee\s*music(?:\s*company)?|sony\s*music(?:\s*india)?|yrf|tips\s*official|saregama|speed\s*records|eros\s*now|svf|geet\s*mp3|deshi\s*music)\b",
+    re.IGNORECASE
+)
+
+_TRANSCRIPT_ARTIFACT_PAT = re.compile(
+    r"^\[(?:music|applause|laughter|cheering|ambient\s*noise|silence|instrumental)\]$",
+    re.IGNORECASE
+)
+
+def _is_metadata_or_credit_line(raw_text: str) -> bool:
+    if not raw_text or not isinstance(raw_text, str):
+        return True
+    text = raw_text.strip()
+    if not text:
+        return True
+    if _STANDALONE_HEADING_PAT.search(text):
+        return True
+    if _CREDIT_PREFIX_PAT.search(text):
+        return True
+    if _INSTRUMENT_CREDIT_PAT.search(text):
+        return True
+    if _METADATA_HEADER_PAT.search(text):
+        return True
+    if _PROMO_OR_LEGAL_PAT.search(text):
+        return True
+    if _LABEL_BRANDING_PAT.search(text):
+        return True
+    if _TRANSCRIPT_ARTIFACT_PAT.search(text):
+        return True
+    return False
+
+def _sanitize_lyric_lines(lines: list) -> list:
+    if not isinstance(lines, list):
+        return []
+    out = []
+    for line in lines:
+        text = (line.get("text") or "").strip()
+        if text and not _is_metadata_or_credit_line(text):
+            out.append(line)
+    return out
+
+def _is_genuine_lyric_lines(lines: list) -> bool:
+    if not isinstance(lines, list) or len(lines) < 3:
+        return False
+    credit_count = 0
+    valid_words = 0
+    for line in lines:
+        text = (line.get("text") or "").strip()
+        if not text:
+            continue
+        if _is_metadata_or_credit_line(text):
+            credit_count += 1
+        else:
+            valid_words += len(text.split())
+    valid_count = len(lines) - credit_count
+    if valid_count < 3:
+        return False
+    if credit_count / len(lines) > 0.25:
+        return False
+    if valid_words < 6:
+        return False
+    return True
+
+def _validate_plain_lyrics_text(text: str) -> tuple[bool, str]:
+    if not text or not isinstance(text, str):
+        return False, ""
+    raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(raw_lines) < 4:
+        return False, ""
+    credit_count = 0
+    sanitized = []
+    for line in raw_lines:
+        if re.match(r"^\[.*\]$", line) or re.match(r"^\(.*\)$", line):
+            sanitized.append(line)
+            continue
+        if _is_metadata_or_credit_line(line):
+            credit_count += 1
+        else:
+            sanitized.append(line)
+    content_lines = [l for l in sanitized if not re.match(r"^\[.*\]$", l) and not re.match(r"^\(.*\)$", l)]
+    if len(content_lines) < 4 or (credit_count / len(raw_lines) > 0.30):
+        return False, ""
+    return True, "\n".join(sanitized)
+
 def _parse_lrc_py(lrc_str: str) -> list[dict]:
     lines = []
     time_re = re.compile(r"\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]")
@@ -2581,7 +2691,7 @@ def _parse_lrc_py(lrc_str: str) -> list[dict]:
         if not matches:
             continue
         text_only = time_re.sub("", trimmed).strip()
-        if not text_only:
+        if not text_only or _is_metadata_or_credit_line(text_only):
             continue
         for m in matches:
             mins = int(m.group(1))
@@ -2609,10 +2719,12 @@ def _align_plain_lyrics_py(plain_text: str, total_duration: float = 210) -> list
         if re.match(r"^\[.*\]$", l) or re.match(r"^\(.*\)$", l):
             pending_break = True
             continue
+        if _is_metadata_or_credit_line(l):
+            continue
         valid.append({"text": l, "has_break": pending_break})
         pending_break = False
 
-    if not valid:
+    if len(valid) < 4:
         return []
 
     dur = max(60.0, float(total_duration or 210))
@@ -2682,11 +2794,15 @@ def api_lyrics():
                 if isinstance(data, list) and len(data) > 0:
                     for item in data:
                         if item.get("syncedLyrics"):
-                            synced_lines = _parse_lrc_py(item["syncedLyrics"])
-                            if synced_lines:
+                            parsed = _parse_lrc_py(item["syncedLyrics"])
+                            sanitized = _sanitize_lyric_lines(parsed)
+                            if _is_genuine_lyric_lines(sanitized):
+                                synced_lines = sanitized
                                 break
                         if not plain_lyrics_text and item.get("plainLyrics"):
-                            plain_lyrics_text = item["plainLyrics"]
+                            is_valid, sanitized_text = _validate_plain_lyrics_text(item["plainLyrics"])
+                            if is_valid:
+                                plain_lyrics_text = sanitized_text
                     if synced_lines:
                         break
         except Exception:
@@ -2713,24 +2829,33 @@ def api_lyrics():
                     items = d_res.json().get("items", [])
                     if items:
                         desc = items[0].get("snippet", {}).get("description", "")
-                        match = re.search(r"(?:lyrics|song lyrics|lyrics\s*:\s*|গান\s*:\s*|কথা\s*:\s*|बोल\s*:\s*)([\s\S]*?)(?=(?:music\s*label|audio\s*label|label\s*:|singer\s*:|composer\s*:|director|producer|stream|listen|available|itunes|spotify|http|#|\n{3,}|$))", desc, re.IGNORECASE)
-                        if match and len(match.group(1).splitlines()) >= 4:
-                            plain_lyrics_text = match.group(1).strip()
+                        match = re.search(
+                            r"(?:(?:^|\r?\n)\s*(?:lyrics\s*:\s*\r?\n|lyrics\s*-\s*\r?\n|song\s*lyrics\s*[:\-]?\s*\r?\n|lyrics\s*in\s*(?:english|hindi|bengali)\s*[:\-]?\s*\r?\n|গান\s*[:\-]?\s*\r?\n|কথা\s*[:\-]?\s*\r?\n|बोल\s*[:\-]?\s*\r?\n))([\s\S]*?)(?=(?:\r?\n\s*(?:music\s*label|audio\s*label|label\s*:|stream|listen|available|itunes|spotify|http|#|\r?\n\r?\n\r?\n|$)))",
+                            desc,
+                            re.IGNORECASE
+                        )
+                        if match and match.group(1):
+                            is_valid, sanitized_text = _validate_plain_lyrics_text(match.group(1))
+                            if is_valid:
+                                plain_lyrics_text = sanitized_text
         except Exception:
             pass
 
     # 3. Tier 3: Audio-Guided Alignment
     if plain_lyrics_text:
-        aligned = _align_plain_lyrics_py(plain_lyrics_text, duration or 210)
-        if aligned:
-            res_data = {
-                "source": "aligned",
-                "lines": aligned
-            }
-            search_cache.set(cache_key, res_data, ttl=86400)
-            resp = jsonify(res_data)
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-            return resp
+        is_valid, sanitized_text = _validate_plain_lyrics_text(plain_lyrics_text)
+        if is_valid:
+            aligned = _align_plain_lyrics_py(sanitized_text, duration or 210)
+            sanitized_aligned = _sanitize_lyric_lines(aligned)
+            if _is_genuine_lyric_lines(sanitized_aligned):
+                res_data = {
+                    "source": "aligned",
+                    "lines": sanitized_aligned
+                }
+                search_cache.set(cache_key, res_data, ttl=86400)
+                resp = jsonify(res_data)
+                resp.headers["Access-Control-Allow-Origin"] = "*"
+                return resp
 
     resp = jsonify({"source": "none", "lines": []})
     resp.headers["Access-Control-Allow-Origin"] = "*"

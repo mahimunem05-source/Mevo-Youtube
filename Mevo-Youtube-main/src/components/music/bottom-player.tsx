@@ -12,15 +12,17 @@ import {
   VolumeX,
   Repeat,
   Repeat1,
+  Mic2,
 } from "lucide-react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { usePlayer } from "@/lib/player-context";
 import { useNavigationHistory } from "@/lib/navigation-history";
 import { useSettings } from "@/context/SettingsContext";
 import { SeekBar } from "./seek-bar";
-import { useState, useCallback, memo } from "react";
+import { useState, useCallback, useMemo, useEffect, memo } from "react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_COVER, isYouTubeSong } from "@/data/songs";
+import { getCachedCatalogue } from "@/lib/music-library";
 
 /**
  * Bottom playback bar — premium floating dock with a hide/show handle.
@@ -48,8 +50,21 @@ function BottomPlayerComponent() {
   const navigate = useNavigate();
   const { recordPlayerSource } = useNavigationHistory();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const isFullPlayerOpen = Boolean(song) && pathname === `/song/${song?.id}`;
-  const show = Boolean(song) && p.playerVisible && !isFullPlayerOpen;
+  const [isTourActive, setIsTourActive] = useState(false);
+  useEffect(() => {
+    const handleStart = () => setIsTourActive(true);
+    const handleEnd = () => setIsTourActive(false);
+    window.addEventListener("mevo-tour-active", handleStart);
+    window.addEventListener("mevo-tour-inactive", handleEnd);
+    return () => {
+      window.removeEventListener("mevo-tour-active", handleStart);
+      window.removeEventListener("mevo-tour-inactive", handleEnd);
+    };
+  }, []);
+
+  const activeSong = song || (isTourActive ? getCachedCatalogue()[0] || null : null);
+  const isFullPlayerOpen = Boolean(activeSong) && pathname === `/song/${activeSong?.id}`;
+  const show = Boolean(activeSong) && (p.playerVisible || isTourActive) && !isFullPlayerOpen;
 
   // Collapsed state — persisted for the session so it survives navigation
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -74,14 +89,14 @@ function BottomPlayerComponent() {
   }, []);
 
   const openFullPlayer = () => {
-    if (!song) return;
+    if (!activeSong) return;
     recordPlayerSource();
-    void navigate({ to: "/song/$songId", params: { songId: song.id } });
+    void navigate({ to: "/song/$songId", params: { songId: activeSong.id } });
   };
 
   return (
     <AnimatePresence>
-      {show && song && (
+      {show && activeSong && (
         <motion.div
           key="bottom-player"
           initial={{ y: 96, opacity: 0 }}
@@ -161,7 +176,7 @@ function BottomPlayerComponent() {
               <div
                 role="button"
                 tabIndex={0}
-                aria-label={`Open full player for ${song.title}`}
+                aria-label={`Open full player for ${activeSong.title}`}
                 onClick={openFullPlayer}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
@@ -194,8 +209,8 @@ function BottomPlayerComponent() {
                 {/* Album artwork — smooth crossfade */}
                 <AnimatePresence mode="wait">
                   <motion.img
-                    key={song.cover}
-                    src={song.cover || DEFAULT_COVER}
+                    key={activeSong.cover}
+                    src={activeSong.cover || DEFAULT_COVER}
                     alt=""
                     loading="eager"
                     decoding="auto"
@@ -213,7 +228,7 @@ function BottomPlayerComponent() {
                     transition={{ duration: 0.22, ease: "easeOut" }}
                     className={cn(
                       "shrink-0 rounded-lg object-cover ring-1 ring-white/10 shadow-md transition-all",
-                      isYouTubeSong(song)
+                      isYouTubeSong(activeSong)
                         ? (isCompact ? "h-7 w-12 sm:h-9 sm:w-16 aspect-video" : "h-9 w-16 aspect-video")
                         : (isCompact ? "h-7 w-7 sm:h-9 sm:w-9 aspect-square" : "h-9 w-9 aspect-square"),
                     )}
@@ -223,7 +238,7 @@ function BottomPlayerComponent() {
                 {/* Song info + progress bar — smooth text crossfade */}
                 <AnimatePresence mode="wait">
                   <motion.div
-                    key={song.id}
+                    key={activeSong.id}
                     initial={{ opacity: 0, y: 4 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -4 }}
@@ -236,7 +251,7 @@ function BottomPlayerComponent() {
                         isCompact ? "text-xs sm:text-[13px]" : "text-[13px]",
                       )}
                     >
-                      {song.title}
+                      {activeSong.title}
                     </div>
                     <div
                       className={cn(
@@ -244,7 +259,7 @@ function BottomPlayerComponent() {
                         isCompact ? "text-[9px] sm:text-[10px]" : "text-[10px]",
                       )}
                     >
-                      {song.artist}
+                      {activeSong.artist}
                     </div>
                     {/* Progress bar — always visible */}
                     <SeekBar size="compact" className={isCompact ? "mt-0.5 sm:mt-1" : "mt-1"} />
@@ -362,6 +377,30 @@ function BottomPlayerComponent() {
                     ) : (
                       <Repeat className={isCompact ? "h-3 w-3 sm:h-3.5 sm:w-3.5" : "h-3.5 w-3.5"} />
                     )}
+                  </motion.button>
+
+                  {/* Lyrics button */}
+                  <motion.button
+                    type="button"
+                    id="lyrics-trigger-btn"
+                    data-tour="lyrics"
+                    aria-label="View live lyrics"
+                    whileTap={{ scale: 0.95 }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (activeSong) {
+                        recordPlayerSource();
+                        void navigate({ to: "/song/$songId", params: { songId: activeSong.id } });
+                      }
+                    }}
+                    className={cn(
+                      "grid place-items-center rounded-full text-muted-foreground transition-colors hover:text-[#4FD1C5]",
+                      isCompact ? "h-6 w-6 sm:h-7 sm:w-7" : "h-7 w-7",
+                    )}
+                  >
+                    <Mic2
+                      className={isCompact ? "h-3 w-3 sm:h-3.5 sm:w-3.5" : "h-3.5 w-3.5"}
+                    />
                   </motion.button>
 
                   {/* Queue icon */}

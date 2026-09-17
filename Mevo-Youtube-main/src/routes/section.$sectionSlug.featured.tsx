@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, notFound } from "@tanstack/react-router";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "motion/react";
 import {
   LoaderCircle,
@@ -84,11 +85,8 @@ function SectionFeaturedPage() {
   const { section } = Route.useLoaderData();
   const player = usePlayer();
   const { openAddToPlaylistModal } = usePlaylists();
+  const queryClient = useQueryClient();
 
-  const [databaseSongs, setDatabaseSongs] = useState<DatabaseSong[]>([]);
-  const [trendingSongs, setTrendingSongs] = useState<DatabaseTrendingSong[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const isMahiSelect =
@@ -96,59 +94,67 @@ function SectionFeaturedPage() {
     section.slug === "mahis-favourite" ||
     section.slug === "mahi-select";
 
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadData() {
-      try {
-        setIsLoading(true);
-        setLoadError("");
-
-        const [songsData, trendingData] = await Promise.all([
-          isMahiSelect
-            ? supabase
-                .from("songs")
-                .select("*")
-                .order("created_at", { ascending: false })
-                .then((res) => (res.data ?? []) as DatabaseSong[])
-            : getSongs(),
-          getTrendingSongs(),
-        ]);
-
-        if (isMounted) {
-          setDatabaseSongs(songsData);
-          setTrendingSongs(trendingData);
-        }
-      } catch (error) {
-        if (isMounted) {
-          console.error("Could not load featured songs:", error);
-          setLoadError(error instanceof Error ? error.message : "Could not load featured tracks.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
+  const {
+    data: databaseSongs = [],
+    isLoading: isDbLoading,
+    error: dbError,
+  } = useQuery({
+    queryKey: ["featured-database-songs", isMahiSelect ? "mahi-select" : "all"],
+    queryFn: async () => {
+      if (isMahiSelect) {
+        const res = await supabase
+          .from("songs")
+          .select("*")
+          .order("created_at", { ascending: false });
+        return (res.data ?? []) as DatabaseSong[];
       }
-    }
+      return getSongs();
+    },
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
+    placeholderData: keepPreviousData,
+  });
 
-    void loadData();
+  const {
+    data: trendingSongs = [],
+    isLoading: isTrendingLoading,
+    error: trendingError,
+  } = useQuery({
+    queryKey: ["featured-trending-songs"],
+    queryFn: getTrendingSongs,
+    staleTime: 1000 * 60 * 15,
+    gcTime: 1000 * 60 * 60,
+    placeholderData: keepPreviousData,
+  });
 
+  const isLoading = (isDbLoading || isTrendingLoading) && databaseSongs.length === 0 && trendingSongs.length === 0;
+  const loadError =
+    dbError instanceof Error
+      ? dbError.message
+      : trendingError instanceof Error
+        ? trendingError.message
+        : "";
+
+  useEffect(() => {
     const cleanup = subscribeToRealtimeChanges(`featured-page-${section.id}`, [
       {
         table: "songs",
-        callback: () => void loadData(),
+        callback: () => {
+          void queryClient.invalidateQueries({ queryKey: ["featured-database-songs"] });
+        },
       },
       {
         table: "trending_songs",
-        callback: () => void loadData(),
+        callback: () => {
+          void queryClient.invalidateQueries({ queryKey: ["featured-trending-songs"] });
+        },
       },
     ]);
 
     return () => {
-      isMounted = false;
       cleanup();
     };
-  }, [section.id, isMahiSelect]);
+  }, [section.id, queryClient]);
 
   const allCatalogueSongs = useMemo<PlayerSong[]>(() => {
     const dbConverted = databaseSongs.map((s) => databaseSongToPlayerSong(s));

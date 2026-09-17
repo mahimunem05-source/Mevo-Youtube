@@ -62,27 +62,6 @@ function getHomepageNavigationSource(section: DisplaySection): NavigationSource 
 function SectionRowComponent({ section, songs }: { section: DisplaySection; songs: Song[] }) {
   const scroller = useRef<HTMLDivElement>(null);
 
-  // Force layout recalculation and scroll repaint after page navigation completes
-  useEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-
-    const raf = requestAnimationFrame(() => {
-      void el.offsetHeight;
-      el.dispatchEvent(new Event("scroll"));
-    });
-
-    const timer = setTimeout(() => {
-      void el.offsetHeight;
-      el.dispatchEvent(new Event("scroll"));
-    }, 320);
-
-    return () => {
-      cancelAnimationFrame(raf);
-      clearTimeout(timer);
-    };
-  }, [section.id]);
-
   const scrollBy = (direction: 1 | -1) => {
     const scrollAmount = typeof window !== "undefined" && window.innerWidth >= 1024 ? 680 : 460;
     scroller.current?.scrollBy({
@@ -99,13 +78,31 @@ function SectionRowComponent({ section, songs }: { section: DisplaySection; song
 
   const navigationSource = getHomepageNavigationSource(section);
 
+  const tourAttr =
+    section.id === "quick-picks"
+      ? "quick-picks"
+      : section.id === "favourite" || section.id === "mahi-select"
+        ? "mahi-select"
+        : section.id;
+  const tourId =
+    section.id === "quick-picks"
+      ? "quick-picks-section"
+      : section.id === "favourite" || section.id === "mahi-select"
+        ? "mahi-select-section"
+        : section.id;
+
   return (
     <section
-      id={section.id}
+      id={tourId}
+      data-section={section.id}
+      data-tour={tourAttr}
       className="relative scroll-mt-28 py-2 sm:py-6 lg:py-8 max-w-7xl mx-auto"
       aria-labelledby={`${section.id}-heading`}
     >
-      <header className="mb-1.5 flex flex-wrap items-end justify-between gap-2 px-3 sm:mb-4 lg:mb-5 sm:gap-4 sm:px-6 md:px-12">
+      <header
+        data-tour={tourAttr ? `${tourAttr}-header` : undefined}
+        className="mb-1.5 flex flex-wrap items-end justify-between gap-2 px-3 sm:mb-4 lg:mb-5 sm:gap-4 sm:px-6 md:px-12"
+      >
         <div>
           <div className="flex items-center gap-2">
             <h2

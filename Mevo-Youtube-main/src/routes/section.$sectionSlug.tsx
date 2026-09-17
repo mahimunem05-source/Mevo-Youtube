@@ -219,11 +219,29 @@ function SectionDetailsPage() {
     return false;
   });
 
-  const [paginatedSongs, setPaginatedSongs] = useState<PlayerSong[]>([]);
-  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
+  const getCachedInitialData = useCallback(() => {
+    if (section.id === "quick-picks") {
+      const qp = queryClient.getQueryData<PlayerSong[]>(["section-quick-picks-songs"]);
+      return { songs: qp || [], token: null, more: (qp?.length || 0) >= 10 };
+    }
+    const yt = queryClient.getQueryData<{ songs: PlayerSong[]; nextPageToken: string | null }>([
+      "section-youtube-songs",
+      section.id,
+    ]);
+    return {
+      songs: yt?.songs || [],
+      token: yt?.nextPageToken || null,
+      more: Boolean(yt?.nextPageToken),
+    };
+  }, [section.id, queryClient]);
+
+  const initialData = getCachedInitialData();
+
+  const [paginatedSongs, setPaginatedSongs] = useState<PlayerSong[]>(() => initialData.songs);
+  const [nextPageToken, setNextPageToken] = useState<string | null>(() => initialData.token);
   const [quickPicksPage, setQuickPicksPage] = useState(1);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(() => (initialData.songs.length > 0 ? initialData.more : true));
   const isFetchingRef = useRef(false);
   const hasMoreRef = useRef(hasMore);
   hasMoreRef.current = hasMore;
@@ -247,13 +265,14 @@ function SectionDetailsPage() {
   useEffect(() => {
     if (prevSectionIdRef.current !== section.id) {
       prevSectionIdRef.current = section.id;
-      setPaginatedSongs([]);
-      setNextPageToken(null);
+      const fresh = getCachedInitialData();
+      setPaginatedSongs(fresh.songs);
+      setNextPageToken(fresh.token);
       setQuickPicksPage(1);
-      setHasMore(true);
+      setHasMore(fresh.songs.length > 0 ? fresh.more : true);
       isFetchingRef.current = false;
     }
-  }, [section.id]);
+  }, [section.id, getCachedInitialData]);
 
   useEffect(() => {
     if (section.id === "quick-picks" && quickPicksQuery.data && paginatedSongs.length === 0) {
@@ -741,6 +760,7 @@ function SectionDetailsPage() {
               initial={{ opacity: 0, scale: 0.94 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.26, delay: 0.04, ease: [0.22, 1, 0.36, 1] }}
+              style={{ willChange: "transform, opacity", transform: "translate3d(0,0,0)" }}
               className="relative size-32 sm:size-40 shrink-0 overflow-hidden rounded-2xl border border-border shadow-[0_12px_28px_rgba(0,0,0,0.15)] dark:shadow-[0_12px_28px_rgba(0,0,0,0.6)]"
             >
               {heroCover ? (
@@ -765,6 +785,7 @@ function SectionDetailsPage() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.24, delay: 0.02, ease: [0.22, 1, 0.36, 1] }}
+              style={{ willChange: "transform, opacity", transform: "translate3d(0,0,0)" }}
               className="min-w-0 flex-1 pt-1"
             >
               <p className="text-[10px] sm:text-xs font-extrabold uppercase tracking-[0.2em] text-teal-400">
@@ -788,6 +809,7 @@ function SectionDetailsPage() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.24, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+            style={{ willChange: "transform, opacity", transform: "translate3d(0,0,0)" }}
             className="mt-6 flex items-center justify-between"
           >
             {/* Play All Button */}

@@ -80,12 +80,14 @@ interface MobileDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   pathname: string;
+  isTourActive?: boolean;
 }
 
 const MobileDrawer = memo(function MobileDrawerComponent({
   isOpen,
   onClose,
   pathname,
+  isTourActive = false,
 }: MobileDrawerProps) {
   const isItemActive = (to: string, exact?: boolean) => {
     if (exact || to === "/") return pathname === "/";
@@ -117,7 +119,10 @@ const MobileDrawer = memo(function MobileDrawerComponent({
               transform: "translate3d(0,0,0)",
               backfaceVisibility: "hidden",
             }}
-            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
+            className={cn(
+              "fixed inset-0 bg-black/70 backdrop-blur-sm",
+              isTourActive ? "hidden" : "z-50",
+            )}
           />
 
           {/* Left Drawer Panel */}
@@ -131,7 +136,10 @@ const MobileDrawer = memo(function MobileDrawerComponent({
               transform: "translate3d(0,0,0)",
               backfaceVisibility: "hidden",
             }}
-            className="fixed inset-y-0 left-0 z-50 flex w-[82%] max-w-80 flex-col bg-[#0B1012] border-r border-[#26343A] p-5 shadow-2xl overflow-y-auto"
+            className={cn(
+              "fixed inset-y-0 left-0 flex w-[82%] max-w-80 flex-col bg-[#0B1012] border-r border-[#26343A] p-5 shadow-2xl overflow-y-auto",
+              isTourActive ? "z-[99999]" : "z-50",
+            )}
           >
             {/* Drawer Top: MEVO Logo */}
             <div className="flex items-center justify-between pb-6 border-b border-[#26343A]">
@@ -160,10 +168,24 @@ const MobileDrawer = memo(function MobileDrawerComponent({
                 <ul className="space-y-1">
                   {mainNav.map(({ to, key, defaultLabel, Icon, exact }) => {
                     const active = isItemActive(to, exact);
+                    const tourAttr =
+                      to === "/albums"
+                        ? "custom-albums"
+                        : to === "/downloads"
+                          ? "downloads"
+                          : undefined;
+                    const tourId =
+                      to === "/albums"
+                        ? "mobile-custom-albums-nav"
+                        : to === "/downloads"
+                          ? "mobile-downloads-nav"
+                          : undefined;
                     return (
                       <li key={to}>
                         <Link
                           to={to}
+                          data-tour={tourAttr}
+                          id={tourId}
                           onClick={onClose}
                           className={`flex items-center gap-3.5 rounded-xl px-3.5 py-2.5 text-sm font-semibold transition-all duration-200 ${
                             active
@@ -287,6 +309,31 @@ function NavbarComponent() {
     };
   }, [drawerOpen]);
 
+  const [isTourActive, setIsTourActive] = useState(false);
+
+  // Handle tour guide programmatic drawer opening / closing & elevation
+  useEffect(() => {
+    const handleOpen = () => setDrawerOpen(true);
+    const handleClose = () => setDrawerOpen(false);
+    const handleTourStart = () => setIsTourActive(true);
+    const handleTourEnd = () => {
+      setIsTourActive(false);
+      setDrawerOpen(false);
+    };
+
+    window.addEventListener("mevo-open-drawer", handleOpen);
+    window.addEventListener("mevo-close-drawer", handleClose);
+    window.addEventListener("mevo-tour-active", handleTourStart);
+    window.addEventListener("mevo-tour-inactive", handleTourEnd);
+
+    return () => {
+      window.removeEventListener("mevo-open-drawer", handleOpen);
+      window.removeEventListener("mevo-close-drawer", handleClose);
+      window.removeEventListener("mevo-tour-active", handleTourStart);
+      window.removeEventListener("mevo-tour-inactive", handleTourEnd);
+    };
+  }, []);
+
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
   }, []);
@@ -324,10 +371,24 @@ function NavbarComponent() {
             <ul className="hidden items-center gap-7 text-xs font-semibold text-slate-600 dark:text-white/70 md:flex">
               {mainNav.map((link) => {
                 const active = isItemActive(link.to, link.exact);
+                const tourAttr =
+                  link.to === "/albums"
+                    ? "custom-albums"
+                    : link.to === "/downloads"
+                      ? "downloads"
+                      : undefined;
+                const tourId =
+                  link.to === "/albums"
+                    ? "custom-albums-nav"
+                    : link.to === "/downloads"
+                      ? "downloads-nav"
+                      : undefined;
                 return (
                   <li key={link.to}>
                     <Link
                       to={link.to}
+                      data-tour={tourAttr}
+                      id={tourId}
                       className={`transition-colors duration-200 hover:text-teal-600 dark:hover:text-teal-400 ${
                         active ? "text-teal-600 dark:text-teal-400 font-bold" : ""
                       }`}
@@ -363,6 +424,8 @@ function NavbarComponent() {
               <button
                 type="button"
                 aria-label="Search"
+                data-tour="search"
+                id="search-tour-target"
                 onClick={() => setSearchOpen(true)}
                 className="flex items-center gap-2 rounded-full bg-white/80 dark:bg-white/[0.07] px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-white/70 border border-slate-200/80 dark:border-transparent backdrop-blur-md shadow-xs dark:shadow-none transition-colors hover:bg-slate-100 dark:hover:bg-white/10 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
@@ -376,6 +439,8 @@ function NavbarComponent() {
               type="button"
               aria-label="Open navigation menu"
               aria-expanded={drawerOpen}
+              data-tour="nav-menu"
+              id="mobile-nav-menu-btn"
               onClick={() => setDrawerOpen((o) => !o)}
               className="grid size-9 shrink-0 place-items-center rounded-full bg-white/80 dark:bg-white/[0.08] text-slate-800 dark:text-white/80 border border-slate-200/80 dark:border-transparent backdrop-blur-md shadow-xs dark:shadow-none transition-colors hover:bg-slate-100 dark:hover:bg-white/15 hover:text-slate-900 dark:hover:text-white cursor-pointer"
             >
@@ -386,7 +451,12 @@ function NavbarComponent() {
       </header>
 
       {/* MOBILE SIDE NAVIGATION DRAWER */}
-      <MobileDrawer isOpen={drawerOpen} onClose={closeDrawer} pathname={pathname} />
+      <MobileDrawer
+        isOpen={drawerOpen}
+        onClose={closeDrawer}
+        pathname={pathname}
+        isTourActive={isTourActive}
+      />
     </>
   );
 }

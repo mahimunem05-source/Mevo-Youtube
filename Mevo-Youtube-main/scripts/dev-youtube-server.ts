@@ -2,7 +2,16 @@ import type { Plugin, ViteDevServer } from "vite";
 import fs from "node:fs";
 import path from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { parseLrc, alignPlainLyrics, processLyricsLines, cleanSongTitle } from "../src/services/lyricsService.ts";
+import {
+  parseLrc,
+  alignPlainLyrics,
+  processLyricsLines,
+  cleanSongTitle,
+  sanitizeLyricLines,
+  isGenuineLyricLines,
+  validatePlainLyricsText,
+  isMetadataOrCreditLine,
+} from "../src/services/lyricsService.ts";
 import { getDirectAudioStreamUrl, verifyStreamContinuouslyPlayable } from "./youtube-solver.ts";
 import {
   isShortsVideo,
@@ -1673,12 +1682,19 @@ export function devYouTubePlugin(): Plugin {
                   if (Array.isArray(data) && data.length > 0) {
                     const withSynced = data.find((r: any) => r.syncedLyrics && r.syncedLyrics.trim().length > 0);
                     if (withSynced) {
-                      syncedLines = parseLrc(withSynced.syncedLyrics);
-                      if (syncedLines.length > 0) break;
+                      const parsed = parseLrc(withSynced.syncedLyrics);
+                      const sanitized = sanitizeLyricLines(parsed);
+                      if (isGenuineLyricLines(sanitized)) {
+                        syncedLines = sanitized;
+                        break;
+                      }
                     }
                     if (!plainLyricsText) {
                       const withPlain = data.find((r: any) => r.plainLyrics && r.plainLyrics.trim().length > 0);
-                      if (withPlain) plainLyricsText = withPlain.plainLyrics;
+                      if (withPlain) {
+                        const valid = validatePlainLyricsText(withPlain.plainLyrics);
+                        if (valid.isValid) plainLyricsText = valid.sanitizedText;
+                      }
                     }
                   }
                 }
@@ -1705,14 +1721,12 @@ export function devYouTubePlugin(): Plugin {
                 const details = await getVideoDetails([videoId], "discovery");
                 const d = details.get(videoId);
                 if (d && d.description) {
-                  const descMatch = d.description.match(/(?:lyrics|song lyrics|lyrics\s*:\s*|গান\s*:\s*|কথা\s*:\s*|बोल\s*:\s*)([\s\S]*?)(?=(?:music\s*label|audio\s*label|label\s*:|singer\s*:|composer\s*:|director|producer|stream|listen|available|itunes|spotify|http|#|\n{3,}|$))/i);
+                  // Only match if lyrics header is followed by actual line break and lyrics stanzas (not single credit line "Lyrics: Name")
+                  const descMatch = d.description.match(/(?:(?:^|\r?\n)\s*(?:lyrics\s*:\s*\r?\n|lyrics\s*-\s*\r?\n|song\s*lyrics\s*[:\-]?\s*\r?\n|lyrics\s*in\s*(?:english|hindi|bengali)\s*[:\-]?\s*\r?\n|গান\s*[:\-]?\s*\r?\n|কথা\s*[:\-]?\s*\r?\n|बोल\s*[:\-]?\s*\r?\n))([\s\S]*?)(?=(?:\r?\n\s*(?:music\s*label|audio\s*label|label\s*:|stream|listen|available|itunes|spotify|http|#|\r?\n\r?\n\r?\n|$)))/i);
                   if (descMatch && descMatch[1]) {
-                    const candidateLines = descMatch[1]
-                      .split(/\r?\n/)
-                      .map((l: string) => l.trim())
-                      .filter((l: string) => l.length > 0 && !/^(lyrics|written by|singer|composer|music)/i.test(l));
-                    if (candidateLines.length >= 4) {
-                      plainLyricsText = candidateLines.join("\n");
+                    const valid = validatePlainLyricsText(descMatch[1]);
+                    if (valid.isValid) {
+                      plainLyricsText = valid.sanitizedText;
                     }
                   }
                 }
@@ -1723,17 +1737,21 @@ export function devYouTubePlugin(): Plugin {
 
             // Tier 3: Audio-Guided Alignment on Plain Lyrics
             if (plainLyricsText) {
-              const aligned = alignPlainLyrics(plainLyricsText, duration || 210);
-              if (aligned.length > 0) {
-                const processed = {
-                  source: "aligned",
-                  lines: processLyricsLines(aligned),
-                };
-                cache.set(lyricsCacheKey, processed, 86400);
-                res.setHeader("Content-Type", "application/json");
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                res.end(JSON.stringify(processed));
-                return;
+              const validPlain = validatePlainLyricsText(plainLyricsText);
+              if (validPlain.isValid) {
+                const aligned = alignPlainLyrics(validPlain.sanitizedText, duration || 210);
+                const sanitized = sanitizeLyricLines(aligned);
+                if (isGenuineLyricLines(sanitized)) {
+                  const processed = {
+                    source: "aligned",
+                    lines: processLyricsLines(sanitized),
+                  };
+                  cache.set(lyricsCacheKey, processed, 86400);
+                  res.setHeader("Content-Type", "application/json");
+                  res.setHeader("Access-Control-Allow-Origin", "*");
+                  res.end(JSON.stringify(processed));
+                  return;
+                }
               }
             }
           } catch (err: any) {

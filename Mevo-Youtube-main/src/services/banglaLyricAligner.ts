@@ -22,7 +22,14 @@
 
 import type { LyricLine, LyricsResult } from "./lyricsService.ts";
 import { isBengaliTrack } from "../lib/youtube-discovery.ts";
-import { cleanSongTitle, cleanArtistName, processLyricsLines } from "./lyricsService.ts";
+import {
+  cleanSongTitle,
+  cleanArtistName,
+  processLyricsLines,
+  sanitizeLyricLines,
+  isGenuineLyricLines,
+  validatePlainLyricsText,
+} from "./lyricsService.ts";
 
 export type AudioVersionTag =
   | "original"
@@ -492,7 +499,11 @@ export async function alignBanglaSongLyrics(
   // 1. Check Audio/Version-Aware In-Memory Cache
   const cacheKey = buildBanglaCacheKey(audioId, versionTag, duration);
   if (memoryCache.has(cacheKey)) {
-    return memoryCache.get(cacheKey) || null;
+    const cached = memoryCache.get(cacheKey);
+    if (cached && isGenuineLyricLines(cached.lines)) {
+      return cached;
+    }
+    memoryCache.delete(cacheKey);
   }
 
   // 2. Check Browser LocalStorage
@@ -502,8 +513,14 @@ export async function alignBanglaSongLyrics(
       if (stored) {
         const item = JSON.parse(stored);
         if (item && item.expiresAt > Date.now() && Array.isArray(item.data?.lines)) {
-          memoryCache.set(cacheKey, item.data);
-          return item.data;
+          if (isGenuineLyricLines(item.data.lines)) {
+            const sanitized = sanitizeLyricLines(item.data.lines);
+            const validResult = { ...item.data, lines: sanitized };
+            memoryCache.set(cacheKey, validResult);
+            return validResult;
+          } else {
+            localStorage.removeItem(`mevo_${cacheKey}`);
+          }
         }
       }
     } catch {
@@ -535,10 +552,17 @@ export async function alignBanglaSongLyrics(
       if (res.ok) {
         const data = await res.json();
         if (data && data.syncedLyrics) {
-          studioLines = parseLrcInternal(data.syncedLyrics);
+          const parsed = parseLrcInternal(data.syncedLyrics);
+          const sanitized = sanitizeLyricLines(parsed);
+          if (isGenuineLyricLines(sanitized)) {
+            studioLines = sanitized;
+          }
         }
         if (data && data.plainLyrics) {
-          plainLyricsText = data.plainLyrics;
+          const valid = validatePlainLyricsText(data.plainLyrics);
+          if (valid.isValid) {
+            plainLyricsText = valid.sanitizedText;
+          }
         }
       }
     } catch {
@@ -556,13 +580,22 @@ export async function alignBanglaSongLyrics(
         if (res.ok) {
           const results = await res.json();
           if (Array.isArray(results) && results.length > 0) {
-            const firstSynced = results.find((r: any) => r.syncedLyrics && r.syncedLyrics.trim());
+            const firstSynced = results.find((r: any) => {
+              if (!r.syncedLyrics || !r.syncedLyrics.trim()) return false;
+              const sanitized = sanitizeLyricLines(parseLrcInternal(r.syncedLyrics));
+              return isGenuineLyricLines(sanitized);
+            });
             if (firstSynced) {
-              studioLines = parseLrcInternal(firstSynced.syncedLyrics);
+              studioLines = sanitizeLyricLines(parseLrcInternal(firstSynced.syncedLyrics));
             }
-            const firstPlain = results.find((r: any) => r.plainLyrics && r.plainLyrics.trim());
-            if (firstPlain) {
-              plainLyricsText = firstPlain.plainLyrics;
+            if (studioLines.length === 0) {
+              const firstPlain = results.find((r: any) => {
+                if (!r.plainLyrics || !r.plainLyrics.trim()) return false;
+                return validatePlainLyricsText(r.plainLyrics).isValid;
+              });
+              if (firstPlain) {
+                plainLyricsText = validatePlainLyricsText(firstPlain.plainLyrics).sanitizedText;
+              }
             }
           }
         }

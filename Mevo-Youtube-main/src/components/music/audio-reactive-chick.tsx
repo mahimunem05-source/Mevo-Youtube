@@ -114,6 +114,11 @@ export const AudioReactiveChick = memo(function AudioReactiveChick({
       // Apply direct GPU transforms with null guards
       if (chickContainerRef.current) {
         chickContainerRef.current.style.transform = `translate3d(${state.x.toFixed(2)}px, ${state.y.toFixed(2)}px, 0) scale(${state.scale.toFixed(3)}) rotate(${state.rotate.toFixed(2)}deg)`;
+        const r1 = (12 * state.glowScale).toFixed(1);
+        const r2 = (24 * state.glowScale).toFixed(1);
+        const a1 = (state.glowOpacity * 1.35).toFixed(2);
+        const a2 = (state.glowOpacity * 0.75).toFixed(2);
+        chickContainerRef.current.style.filter = `drop-shadow(0 0 ${r1}px rgba(45, 212, 191, ${a1})) drop-shadow(0 0 ${r2}px rgba(20, 184, 166, ${a2})) drop-shadow(0 6px 14px rgba(0, 0, 0, 0.6))`;
       }
 
       if (shadowRef.current) {
@@ -146,18 +151,18 @@ export const AudioReactiveChick = memo(function AudioReactiveChick({
         className,
       )}
     >
-      {/* Ambient Audio-Reactive Teal Glow Aura (Glides with Chick) */}
+      {/* Ambient Audio-Reactive Teal Glow Aura (Glides with Chick) - Smooth Radial Gradient with Zero Hard Boundaries */}
       <div
         ref={glowRef}
         aria-hidden="true"
-        className="pointer-events-none absolute left-1/2 top-1/2 size-24 rounded-full bg-teal-500/25 blur-xl will-change-transform"
+        className="pointer-events-none absolute left-1/2 top-1/2 size-36 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgba(45,212,191,0.22)_0%,rgba(45,212,191,0.08)_40%,transparent_70%)] will-change-transform"
       />
 
-      {/* Dynamic Soft Contact Shadow (Glides with Chick) */}
+      {/* Dynamic Soft Contact Shadow (Glides with Chick) - Smooth Radial Gradient */}
       <div
         ref={shadowRef}
         aria-hidden="true"
-        className="pointer-events-none absolute -bottom-1 size-16 rounded-full bg-teal-400/25 blur-md will-change-transform shadow-[0_4px_12px_rgba(0,0,0,0.6)]"
+        className="pointer-events-none absolute -bottom-1 size-20 rounded-full bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0.65)_0%,rgba(0,0,0,0.25)_45%,transparent_70%)] will-change-transform"
       />
 
       {/* Subtle floating music notes on active playback */}
@@ -178,10 +183,13 @@ export const AudioReactiveChick = memo(function AudioReactiveChick({
         </>
       )}
 
-      {/* Ultra-Smooth Gliding Beat Chick Mascot */}
+      {/* Ultra-Smooth Gliding Beat Chick Mascot with Organic Contour Drop-Shadow Glow */}
       <div
         ref={chickContainerRef}
-        className="relative z-10 size-20 filter drop-shadow-[0_6px_14px_rgba(0,0,0,0.6)] flex items-center justify-center will-change-transform origin-bottom"
+        className="relative z-10 size-20 flex items-center justify-center will-change-transform origin-bottom"
+        style={{
+          filter: "drop-shadow(0 0 12px rgba(45, 212, 191, 0.42)) drop-shadow(0 0 24px rgba(20, 184, 166, 0.22)) drop-shadow(0 6px 14px rgba(0, 0, 0, 0.6))",
+        }}
       >
         <img
           src="/beat-chick.png"

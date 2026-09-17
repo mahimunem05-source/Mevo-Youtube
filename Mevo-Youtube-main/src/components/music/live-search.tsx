@@ -136,10 +136,13 @@ export function LiveSearch({
     cleanLegacyPrependedSections();
   }, []);
 
-  // Instant single-click focus & activation when autoFocus is passed
+  // Instant single-click focus & activation when autoFocus is passed (desktop only to prevent mobile keyboard layout shift during transitions)
   useEffect(() => {
     if (autoFocus) {
-      inputRef.current?.focus();
+      const isMobileDevice = typeof window !== "undefined" && window.innerWidth < 768;
+      if (!isMobileDevice) {
+        inputRef.current?.focus();
+      }
       setRecentSearches(getStoredRecentSearches());
       setOpen(true);
     }
@@ -476,7 +479,7 @@ export function LiveSearch({
           id="search-input"
           ref={inputRef}
           value={query}
-          autoFocus={autoFocus}
+          autoFocus={typeof window !== "undefined" && window.innerWidth >= 768 ? autoFocus : false}
           role="combobox"
           aria-expanded={showSearchResults || showRecentSearches}
           aria-controls="search-results"
