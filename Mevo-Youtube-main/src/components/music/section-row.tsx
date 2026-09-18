@@ -81,13 +81,13 @@ function SectionRowComponent({ section, songs }: { section: DisplaySection; song
   const tourAttr =
     section.id === "quick-picks"
       ? "quick-picks"
-      : section.id === "favourite" || section.id === "mahi-select"
+      : section.id === "favourite" || (section.id as string) === "mahi-select"
         ? "mahi-select"
         : section.id;
   const tourId =
     section.id === "quick-picks"
       ? "quick-picks-section"
-      : section.id === "favourite" || section.id === "mahi-select"
+      : section.id === "favourite" || (section.id as string) === "mahi-select"
         ? "mahi-select-section"
         : section.id;
 

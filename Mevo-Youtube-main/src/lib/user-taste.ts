@@ -638,14 +638,42 @@ export function rankTracksByAffinity(tracks: Song[]): Song[] {
 // Stage 1 & 2: Spotify/YouTube-Grade "Quick Picks" / "Made For You" Engine
 // Formulated as 40% Heavy Rotation / 30% Contextual Search / 30% Related Artist Graph
 // ---------------------------------------------------------------------------
-const NEGATIVE_SEARCH_FILTER = "-billboard -top10 -top20 -top50 -top100 -recap -countdown -ranking -compilation -shorts -tiktok -megamix";
+const NEGATIVE_SEARCH_FILTER = "-shorts";
 
 let quickPicksCache: { data: Song[]; timestamp: number } | null = null;
 let quickPicksFlight: Promise<Song[]> | null = null;
 
+export function checkTrackTasteCompatibility(
+  song: Song,
+  dominantCulture: CulturalCategory,
+  isGuest = false
+): boolean {
+  if (isGuest) return true;
+  const songCulture = detectCulturalAffinity(song);
+
+  // If user is listening to Phonk/Boost-Aura, keep it strictly phonk / electronic / bass
+  if (dominantCulture === "boost-aura") {
+    return (
+      songCulture === "boost-aura" ||
+      (song.genre || "").toLowerCase().includes("phonk") ||
+      (song.genre || "").toLowerCase().includes("electronic") ||
+      (song.title || "").toLowerCase().includes("phonk")
+    );
+  }
+
+  // For all other cultures, avoid aggressive phonk / drift bass tracks
+  if (songCulture === "boost-aura" || (song.title || "").toLowerCase().includes("phonk")) {
+    return false;
+  }
+
+  return true;
+}
+
 export async function fetchUserQuickPicks(targetCount = 16): Promise<Song[]> {
   if (quickPicksCache && Date.now() - quickPicksCache.timestamp < 5 * 60 * 1000) {
-    return quickPicksCache.data.slice(0, targetCount);
+    if (quickPicksCache.data.length >= targetCount) {
+      return quickPicksCache.data.slice(0, targetCount);
+    }
   }
 
   if (quickPicksFlight) {
@@ -731,30 +759,7 @@ export async function fetchUserQuickPicks(targetCount = 16): Promise<Song[]> {
       const artistDistribution: Record<string, number> = {};
 
       function isTrackCompatibleWithTaste(song: Song): boolean {
-        if (isGuest) return true;
-        const songCulture = detectCulturalAffinity(song);
-
-        // Strict Vibe Isolation
-        if (dominantCulture === "boost-aura") {
-          return songCulture === "boost-aura" || (song.genre || "").toLowerCase().includes("phonk") || (song.genre || "").toLowerCase().includes("electronic");
-        }
-
-        if (dominantCulture === "hindi") {
-          if (songCulture === "boost-aura") return false;
-          return songCulture === "hindi" || songCulture === "global";
-        }
-
-        if (dominantCulture === "bangla") {
-          if (songCulture === "boost-aura") return false;
-          return songCulture === "bangla" || songCulture === "global";
-        }
-
-        if (dominantCulture === "english") {
-          if (songCulture === "boost-aura") return false;
-          return songCulture === "english" || songCulture === "global";
-        }
-
-        return true;
+        return checkTrackTasteCompatibility(song, dominantCulture, isGuest);
       }
 
       function addCandidate(song: Song): boolean {
@@ -878,12 +883,190 @@ export async function fetchUserQuickPicks(targetCount = 16): Promise<Song[]> {
   return quickPicksFlight;
 }
 
-export async function fetchExpandedUserQuickPicks(page = 1, limit = 20): Promise<Song[]> {
+export async function fetchExpandedUserQuickPicks(
+  page = 1,
+  limit = 20,
+  excludeIds: string[] = []
+): Promise<Song[]> {
   try {
-    const totalNeeded = Math.max(page * limit, 40);
-    const allPicks = await fetchUserQuickPicks(totalNeeded);
-    const start = (page - 1) * limit;
-    return allPicks.slice(start, start + limit);
+    const graph = getUserTasteGraph();
+    const summary = getTasteSummary();
+    const dominantCulture = summary.dominantCulture;
+    const topArtists = summary.dominantArtists;
+    const currentTrackId = graph.lastPlayedTrack?.song?.id;
+    const isGuest = graph.totalPlays < 2 && topArtists.length === 0 && graph.recentSearchEntities.length === 0;
+
+    const seenIds = new Set<string>(
+      excludeIds.map((id) => (id || "").replace(/^yt-/, "").trim().toLowerCase()).filter(Boolean)
+    );
+    if (currentTrackId) {
+      seenIds.add(currentTrackId.replace(/^yt-/, "").trim().toLowerCase());
+    }
+
+    if (page === 1 && excludeIds.length === 0) {
+      const initial = await fetchUserQuickPicks(limit);
+      if (initial.length > 0) {
+        return initial;
+      }
+    }
+
+    const cultureQueries: Record<string, string[][]> = {
+      hindi: [
+        ["soft hindi bollywood melodic acoustic songs official audio", "top trending hindi acoustic melodies official audio"],
+        ["best hindi acoustic unplugged melodies official audio", "romantic bollywood acoustic songs official audio"],
+        ["latest hindi indie acoustic songs official audio", "hindi lo-fi acoustic chill official audio"],
+        ["soulful hindi acoustic melodies official audio", "hindi indie pop acoustic hits official audio"],
+      ],
+      bangla: [
+        ["bangla indie acoustic band songs official audio", "top trending bangla acoustic songs official audio"],
+        ["popular bangla modern acoustic band songs official audio", "bangla indie rock acoustic songs official audio"],
+        ["new bangla indie hits official audio", "bangla folk fusion acoustic songs official audio"],
+        ["top bangla band acoustic songs official audio", "bangla lyrical acoustic melodies official audio"],
+      ],
+      "boost-aura": [
+        ["drift phonk bass boosted music", "aggressive phonk gym workout music"],
+        ["brazilian phonk montage drift bass music", "gym drift phonk aggressive bass"],
+        ["slowed reverb phonk drift aura", "hardstyle phonk bass boost workout"],
+        ["aggressive phonk drift workout music", "phonk drift night drive bass"],
+      ],
+      english: [
+        ["modern english indie pop acoustic chill official audio", "viral english acoustic pop hits official audio"],
+        ["top indie pop chill acoustic songs official audio", "english acoustic chill bedroom pop official audio"],
+        ["modern indie folk acoustic official audio", "acoustic chill morning coffee pop official audio"],
+        ["acoustic pop hits official audio", "chill english indie acoustic songs official audio"],
+      ],
+      global: [
+        ["top viral acoustic melodic hits official audio", "popular indie acoustic chill songs official audio"],
+        ["viral global melodic acoustic indie hits official audio", "trending global melodic hits official audio"],
+        ["acoustic indie morning chill official audio", "latest global indie pop songs official audio"],
+        ["melodic acoustic indie songs official audio", "chill acoustic global vibes official audio"],
+      ],
+    };
+
+    const queries: string[] = [];
+
+    // 1. Target top artists tailored for this page
+    if (topArtists.length > 0) {
+      const a1 = topArtists[(page - 1) % topArtists.length];
+      const a2 = topArtists[page % topArtists.length];
+      if (a1) queries.push(`songs like "${a1}" official audio ${NEGATIVE_SEARCH_FILTER}`);
+      if (a2 && a2 !== a1) queries.push(`"${a2}" top official audio hits ${NEGATIVE_SEARCH_FILTER}`);
+    }
+
+    // 2. Search entities with page offset
+    if (graph.recentSearchEntities.length > 0) {
+      const entity = graph.recentSearchEntities[(page - 1) % graph.recentSearchEntities.length];
+      if (entity?.artist) {
+        queries.push(`songs like "${entity.artist}" official audio ${NEGATIVE_SEARCH_FILTER}`);
+      } else if (entity?.query) {
+        queries.push(`${entity.query} official audio songs ${NEGATIVE_SEARCH_FILTER}`);
+      }
+    }
+
+    // 3. Culture Vibe Pool with page offset
+    const pool = cultureQueries[dominantCulture] || cultureQueries.global;
+    const vibeGroup = pool[(page - 1) % pool.length] || pool[0];
+    for (const q of vibeGroup) {
+      queries.push(`${q} ${NEGATIVE_SEARCH_FILTER}`);
+    }
+
+    // 4. Completed history track seeds
+    if (graph.recentHistory.length > 0) {
+      const hSong = graph.recentHistory[(page - 1) % graph.recentHistory.length]?.song;
+      if (hSong?.artist && hSong?.title) {
+        queries.push(`songs like "${hSong.artist}" "${hSong.title}" official audio ${NEGATIVE_SEARCH_FILTER}`);
+      }
+    }
+
+    const uniqueQueries = [...new Set(queries)].slice(0, 3);
+    const fetchPromises = uniqueQueries.map((q, idx) =>
+      fetchYouTubeCategoryTracks(
+        q,
+        (page + idx) % 2 === 0 ? "viewCount" : "relevance",
+        20,
+        dominantCulture as SectionId,
+        "Quick Picks"
+      )
+    );
+
+    const results = await Promise.allSettled(fetchPromises);
+    const candidatePool: Song[] = [];
+    results.forEach((res) => {
+      if (res.status === "fulfilled" && Array.isArray(res.value)) {
+        candidatePool.push(...res.value);
+      }
+    });
+
+    const finalSelection: Song[] = [];
+    const seenCoreTitles: string[] = [];
+    const artistDistribution: Record<string, number> = {};
+
+    for (const track of candidatePool) {
+      if (finalSelection.length >= limit) break;
+      if (!track || !track.id) continue;
+      const rawId = (track.id || "").replace(/^yt-/, "").trim().toLowerCase();
+      if (!rawId || seenIds.has(rawId)) continue;
+
+      if (typeof track.duration === "number" && track.duration > 0) {
+        if (track.duration < 60 || track.duration > 480) continue;
+      }
+
+      if (!checkTrackTasteCompatibility(track, dominantCulture, isGuest)) continue;
+
+      const songCore = extractCoreSongRoot(track.title);
+      if (songCore) {
+        const isDuplicateVariation = seenCoreTitles.some((existingCore) =>
+          isSameCoreSong(existingCore, songCore, 0.70)
+        );
+        if (isDuplicateVariation) continue;
+      }
+
+      const artist = cleanArtistName(track.artist);
+      if ((artistDistribution[artist] || 0) >= 2) continue;
+
+      if (songCore) seenCoreTitles.push(songCore);
+      seenIds.add(rawId);
+      artistDistribution[artist] = (artistDistribution[artist] || 0) + 1;
+      finalSelection.push(track);
+    }
+
+    if (finalSelection.length < limit) {
+      const fallbackQuery =
+        dominantCulture === "hindi"
+          ? "trending hindi bollywood songs official audio -shorts"
+          : dominantCulture === "bangla"
+            ? "popular bangla songs official audio -shorts"
+            : dominantCulture === "boost-aura"
+              ? "drift phonk bass boost music -shorts"
+              : dominantCulture === "english"
+                ? "popular english pop hits official audio -shorts"
+                : "top global melodic songs official audio -shorts";
+
+      try {
+        const fallbackTracks = await fetchYouTubeCategoryTracks(
+          fallbackQuery,
+          "relevance",
+          20,
+          dominantCulture as SectionId,
+          "Quick Picks"
+        );
+        for (const track of fallbackTracks) {
+          if (finalSelection.length >= limit) break;
+          if (!track || !track.id) continue;
+          const rawId = (track.id || "").replace(/^yt-/, "").trim().toLowerCase();
+          if (!rawId || seenIds.has(rawId)) continue;
+          if (!checkTrackTasteCompatibility(track, dominantCulture, isGuest)) continue;
+
+          seenIds.add(rawId);
+          finalSelection.push(track);
+        }
+      } catch {
+        // ignore fallback error
+      }
+    }
+
+    const synthesized = deduplicateCoreSongVariations(deduplicateYouTubeTracks(finalSelection), 0.70);
+    return synthesized.slice(0, limit);
   } catch (err) {
     console.warn("[QuickPicksEngine] fetchExpandedUserQuickPicks error:", err);
     return [];

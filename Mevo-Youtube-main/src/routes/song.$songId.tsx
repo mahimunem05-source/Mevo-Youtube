@@ -212,7 +212,7 @@ function SongPage() {
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("touchstart", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside, { passive: true });
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("touchstart", handleClickOutside);
@@ -297,7 +297,13 @@ function SongPage() {
       {/* =========================================================================
           MOBILE VIEW (< 1024px) — 100% UNTOUCHED AND EXACTLY AS ORIGINALLY DESIGNED
           ========================================================================= */}
-      <div className="mx-auto max-w-md px-5 pt-2 pb-6 sm:max-w-lg sm:px-6 lg:hidden">
+      <div
+        className="mx-auto max-w-md px-5 pt-2 pb-10 sm:max-w-lg sm:px-6 lg:hidden"
+        style={{
+          transform: "translateZ(0)",
+          WebkitTransform: "translateZ(0)",
+        }}
+      >
         {/* 1. TOP MINIMAL HEADER ("Playing From" header close to top) */}
         <header className="flex items-center justify-between py-1">
           <button
@@ -421,7 +427,14 @@ function SongPage() {
         </header>
 
         {/* 2. ALBUM ARTWORK — Dynamic Aspect Ratio (16:9 for YouTube, 1:1 for Standard) */}
-        <div className="relative mt-2 mb-2 flex justify-center">
+        <div
+          className="relative mt-2 mb-2 flex justify-center"
+          style={{
+            transform: "translateZ(0)",
+            WebkitTransform: "translateZ(0)",
+            contain: "paint layout",
+          }}
+        >
           {/* Subtle Ambient Teal Glow behind Artwork */}
           <div
             aria-hidden="true"
@@ -429,6 +442,11 @@ function SongPage() {
               "pointer-events-none absolute inset-0 m-auto rounded-full bg-[#4FD1C5]/15 blur-3xl",
               isYouTubeSong(song) ? "w-64 h-36" : "size-44",
             )}
+            style={{
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+              willChange: "transform",
+            }}
           />
 
           <motion.img
@@ -595,12 +613,25 @@ function SongPage() {
         </div>
 
         {/* 7. BEAT CHICK CARD — inline companion widget */}
-        <div className="mt-2.5">
+        <div
+          className="mt-2.5"
+          style={{
+            transform: "translateZ(0)",
+            WebkitTransform: "translateZ(0)",
+            contain: "paint layout",
+          }}
+        >
           <BeatChickCard song={song} isPlaying={playing} />
         </div>
 
         {/* 8. UP NEXT SECTION */}
-        <section className="mt-3">
+        <section
+          className="mt-3 touch-pan-y"
+          style={{
+            transform: "translateZ(0)",
+            WebkitTransform: "translateZ(0)",
+          }}
+        >
           <QueueList song={song} isMobile={true} />
         </section>
       </div>

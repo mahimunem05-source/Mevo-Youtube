@@ -128,8 +128,10 @@ export function QueueList({
   const canLoadMore = !isFixedQueue && queue.length > 0 && hasMorePages;
 
   useEffect(() => {
-    activeRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [current?.id]);
+    if (!isMobile) {
+      activeRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [current?.id, isMobile]);
 
   const handleSelect = (track: Song, index: number) => {
     const alreadyActive = current?.id === track.id && currentIndex === index;
@@ -279,7 +281,13 @@ export function QueueList({
 
   const queueListContent = (
     <>
-          <ul className="space-y-2 pb-1">
+          <ul
+            className="space-y-2 pb-1"
+            style={{
+              transform: "translateZ(0)",
+              WebkitTransform: "translateZ(0)",
+            }}
+          >
             {queue.map((track, index) => {
               const active = currentIndex === index && current?.id === track.id;
               const menuOpen = openMenuIndex === index;
@@ -319,13 +327,22 @@ export function QueueList({
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(index * 0.02, 0.2) }}
                   className="relative"
+                  style={{
+                    contentVisibility: "auto",
+                    containIntrinsicSize: "0 60px",
+                    contain: "layout style paint",
+                  }}
                 >
                   <div
-                  className={cn(
-                    "group relative flex w-full items-center rounded-xl p-2 transition-all duration-200",
-                    active ? "bg-[#182227] border border-[#4FD1C5]/40" : "hover:bg-white/[0.05]",
-                  )}
-                >
+                    className={cn(
+                      "group relative flex w-full items-center rounded-xl p-2 transition-all duration-200",
+                      active ? "bg-[#182227] border border-[#4FD1C5]/40" : "hover:bg-white/[0.05]",
+                    )}
+                    style={{
+                      transform: "translateZ(0)",
+                      WebkitTransform: "translateZ(0)",
+                    }}
+                  >
                   {/* Drag handle icon on far left */}
                   <GripVertical className="size-4 shrink-0 text-white/30 mr-2.5" />
 
@@ -482,7 +499,7 @@ export function QueueList({
   );
 
   return (
-    <aside aria-label="Up next playback queue" className="w-full">
+    <aside aria-label="Up next playback queue" className="w-full touch-pan-y">
       {/* Header: UP NEXT (left) | CLEAR (right) */}
       <header className="mb-3 flex items-center justify-between">
         <h2 className="text-[11px] font-extrabold uppercase tracking-[0.25em] text-teal-400/90 flex items-center gap-1.5">
@@ -504,12 +521,10 @@ export function QueueList({
           <Music className="size-6 text-white/30" />
           <p className="text-xs">No songs in queue.</p>
         </div>
-      ) : isMobile ? (
-        <div className="max-h-[46vh] sm:max-h-[50vh] overflow-y-auto overscroll-y-auto pr-1.5 -mr-1 scroll-smooth touch-pan-y [webkit-overflow-scrolling:touch] [scrollbar-width:thin] [scrollbar-color:rgba(79,209,197,0.3)_transparent] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-teal-500/30 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-teal-500/50">
+      ) : (
+        <div className="w-full touch-pan-y overscroll-y-auto">
           {queueListContent}
         </div>
-      ) : (
-        queueListContent
       )}
 
       {/* Confirmation Dialog for Clearing Queue */}

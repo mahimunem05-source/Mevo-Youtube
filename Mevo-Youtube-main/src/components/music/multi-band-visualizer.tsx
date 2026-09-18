@@ -1,15 +1,18 @@
 import React, { memo, useEffect, useRef } from "react";
 import { getLiveMultiBandLevels } from "@/lib/multi-band-audio";
+import { isUserFastScrolling } from "@/lib/scroll-performance";
 import { cn } from "@/lib/utils";
 
 export interface MultiBandVisualizerProps {
   isPlaying: boolean;
+  isVisible?: boolean;
   side?: "left" | "right";
   className?: string;
 }
 
 export const MultiBandVisualizer = memo(function MultiBandVisualizer({
   isPlaying,
+  isVisible = true,
   side = "left",
   className,
 }: MultiBandVisualizerProps) {
@@ -34,6 +37,12 @@ export const MultiBandVisualizer = memo(function MultiBandVisualizer({
 
     const renderLoop = (timeMs: number) => {
       if (isCancelled) return;
+
+      // Skip DOM writes during active scrolling or when element is offscreen
+      if (isVisible === false || isUserFastScrolling()) {
+        animId = requestAnimationFrame(renderLoop);
+        return;
+      }
 
       // 1. Fetch live multi-band audio frequency levels
       const live = getLiveMultiBandLevels(isPlaying, timeMs);
@@ -94,7 +103,7 @@ export const MultiBandVisualizer = memo(function MultiBandVisualizer({
         cancelAnimationFrame(animId);
       }
     };
-  }, [isPlaying, side]);
+  }, [isPlaying, side, isVisible]);
 
   return (
     <div
@@ -103,6 +112,10 @@ export const MultiBandVisualizer = memo(function MultiBandVisualizer({
         side === "right" ? "justify-end flex-row-reverse" : "justify-start flex-row",
         className,
       )}
+      style={{
+        contain: "paint layout",
+        transform: "translateZ(0)",
+      }}
     >
       {/* ── 1. BASS BAR (~20Hz - 250Hz Sub/Kick) ────────────────────────── */}
       <div className="group/bar relative flex flex-col items-center h-full justify-end w-2.5">

@@ -1,4 +1,4 @@
-import React, { memo } from "react";
+import React, { memo, useEffect, useRef, useState } from "react";
 import { Sparkles, Activity, Mic2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import type { Song } from "@/data/songs";
@@ -19,6 +19,25 @@ export const BeatChickCard = memo(function BeatChickCard({
   isPlaying,
   className,
 }: BeatChickCardProps) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(true);
+
+  // Monitor viewport visibility with 100px buffer to pause heavy visualizer loops when scrolled offscreen
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsVisible(entry.isIntersecting);
+      },
+      { rootMargin: "100px 0px" },
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   // Dual-source lyrics query (LRCLIB -> YouTube Closed Captions fallback)
   const lyricsQuery = useQuery({
     queryKey: ["song-lyrics", song?.id, song?.title, song?.artist, song?.audio, Math.round(song?.duration || 0)],
@@ -34,8 +53,14 @@ export const BeatChickCard = memo(function BeatChickCard({
 
   return (
     <div
+      ref={cardRef}
       id="beat-chick-card"
       data-tour="lyrics"
+      style={{
+        transform: "translateZ(0)",
+        WebkitTransform: "translateZ(0)",
+        contain: "paint layout",
+      }}
       className={cn(
         "group relative overflow-hidden rounded-[16px] border border-[#243339] bg-[#0E1518]/90 p-3 shadow-[0_8px_24px_rgba(0,0,0,0.5)] backdrop-blur-md transition-all duration-200 select-none will-change-transform",
         className,
@@ -101,19 +126,19 @@ export const BeatChickCard = memo(function BeatChickCard({
       {/* ── CARD MAIN VISUAL BODY (Multi-Band Visualizer + Center [Lyrics vs. Chick]) ─ */}
       <div className={cn("relative mt-2 flex h-32 sm:h-36 items-center justify-between px-2 transition-all duration-300", hasLyrics ? "overflow-hidden" : "overflow-visible")}>
         {/* Left Multi-Band Visualizer (Bass / Vocal / Treble) */}
-        <MultiBandVisualizer isPlaying={isPlaying} side="left" className="w-16 sm:w-20 shrink-0" />
+        <MultiBandVisualizer isPlaying={isPlaying} isVisible={isVisible} side="left" className="w-16 sm:w-20 shrink-0" />
 
         {/* Center: Synced Scrolling Lyrics OR Audio-Reactive Dancing Beat Chick */}
         <div className={cn("relative flex-1 h-full mx-2 flex items-center justify-center", hasLyrics ? "overflow-hidden" : "overflow-visible")}>
           {hasLyrics ? (
             <SyncedLyricsVisualizer lines={lyrics!.lines} className="size-full" />
           ) : (
-            <AudioReactiveChick isPlaying={isPlaying} bpm={song?.bpm || 120} />
+            <AudioReactiveChick isPlaying={isPlaying} isVisible={isVisible} bpm={song?.bpm || 120} />
           )}
         </div>
 
         {/* Right Multi-Band Visualizer (Bass / Vocal / Treble) */}
-        <MultiBandVisualizer isPlaying={isPlaying} side="right" className="w-16 sm:w-20 shrink-0" />
+        <MultiBandVisualizer isPlaying={isPlaying} isVisible={isVisible} side="right" className="w-16 sm:w-20 shrink-0" />
       </div>
 
       {/* ── CARD FOOTER / MULTI-BAND SPECTRUM TEXT ────────────────────────── */}

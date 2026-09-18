@@ -206,9 +206,11 @@ function SectionDetailsPage() {
   const queryClient = useQueryClient();
   const { recordPlayerSource } = useNavigationHistory();
 
+  const isQuickPicks = section.id === "quick-picks" || section.slug === "quick-picks";
+
   const sectionConfig = HOME_SECTIONS.find((s) => {
     if (s.id === section.id || s.id === section.slug) return true;
-    if (section.id === "quick-picks" && (s.id === "quick-picks" || s.id === "trending")) return true;
+    if (isQuickPicks && (s.id === "quick-picks" || s.id === "trending")) return true;
     if (section.id === "trending" && s.id === "mevo-pulse") return true;
     if (section.id === "bangla" && s.id === "bengal-echo") return true;
     if (section.id === "hindi" && s.id === "hindi-reverie") return true;
@@ -220,9 +222,18 @@ function SectionDetailsPage() {
   });
 
   const getCachedInitialData = useCallback(() => {
-    if (section.id === "quick-picks") {
+    if (isQuickPicks) {
       const qp = queryClient.getQueryData<PlayerSong[]>(["section-quick-picks-songs"]);
-      return { songs: qp || [], token: null, more: (qp?.length || 0) >= 10 };
+      if (qp && qp.length > 0) {
+        return { songs: qp, token: null, more: true };
+      }
+      const hpQueries = queryClient.getQueriesData<PlayerSong[]>({ queryKey: ["homepage-quick-picks"] });
+      for (const [, data] of hpQueries) {
+        if (data && data.length > 0) {
+          return { songs: data, token: null, more: true };
+        }
+      }
+      return { songs: [], token: null, more: true };
     }
     const yt = queryClient.getQueryData<{ songs: PlayerSong[]; nextPageToken: string | null }>([
       "section-youtube-songs",
@@ -233,7 +244,7 @@ function SectionDetailsPage() {
       token: yt?.nextPageToken || null,
       more: Boolean(yt?.nextPageToken),
     };
-  }, [section.id, queryClient]);
+  }, [isQuickPicks, section.id, queryClient]);
 
   const initialData = getCachedInitialData();
 
@@ -241,7 +252,7 @@ function SectionDetailsPage() {
   const [nextPageToken, setNextPageToken] = useState<string | null>(() => initialData.token);
   const [quickPicksPage, setQuickPicksPage] = useState(1);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(() => (initialData.songs.length > 0 ? initialData.more : true));
+  const [hasMore, setHasMore] = useState(() => (isQuickPicks ? true : (initialData.songs.length > 0 ? initialData.more : true)));
   const isFetchingRef = useRef(false);
   const hasMoreRef = useRef(hasMore);
   hasMoreRef.current = hasMore;
@@ -255,8 +266,8 @@ function SectionDetailsPage() {
   // Dedicated Query for Quick Picks
   const quickPicksQuery = useQuery({
     queryKey: ["section-quick-picks-songs"],
-    queryFn: () => fetchExpandedUserQuickPicks(1, 40),
-    enabled: section.id === "quick-picks",
+    queryFn: () => fetchExpandedUserQuickPicks(1, 15),
+    enabled: isQuickPicks,
     staleTime: 1000 * 60 * 15,
     gcTime: 1000 * 60 * 60,
   });
@@ -269,17 +280,22 @@ function SectionDetailsPage() {
       setPaginatedSongs(fresh.songs);
       setNextPageToken(fresh.token);
       setQuickPicksPage(1);
-      setHasMore(fresh.songs.length > 0 ? fresh.more : true);
+      setHasMore(isQuickPicks ? true : (fresh.songs.length > 0 ? fresh.more : true));
       isFetchingRef.current = false;
     }
-  }, [section.id, getCachedInitialData]);
+  }, [section.id, isQuickPicks, getCachedInitialData]);
 
   useEffect(() => {
-    if (section.id === "quick-picks" && quickPicksQuery.data && paginatedSongs.length === 0) {
-      setPaginatedSongs(quickPicksQuery.data);
-      setHasMore(quickPicksQuery.data.length >= 10);
+    if (isQuickPicks && quickPicksQuery.data && quickPicksQuery.data.length > 0) {
+      setPaginatedSongs((prev) => {
+        if (prev.length === 0) return quickPicksQuery.data!;
+        const seen = new Set(prev.map((s) => s.id));
+        const extra = quickPicksQuery.data!.filter((s) => !seen.has(s.id));
+        return extra.length > 0 ? [...prev, ...extra] : prev;
+      });
+      setHasMore(true);
     }
-  }, [section.id, quickPicksQuery.data, paginatedSongs.length]);
+  }, [isQuickPicks, quickPicksQuery.data]);
 
   const youtubeQuery = useQuery({
     queryKey: ["section-youtube-songs", section.id],
@@ -294,22 +310,23 @@ function SectionDetailsPage() {
   });
 
   useEffect(() => {
-    if (section.id !== "quick-picks" && youtubeQuery.data?.songs && paginatedSongs.length === 0) {
+    if (!isQuickPicks && youtubeQuery.data?.songs && paginatedSongs.length === 0) {
       setPaginatedSongs(youtubeQuery.data.songs);
       setNextPageToken(youtubeQuery.data.nextPageToken || null);
       setHasMore(Boolean(youtubeQuery.data.nextPageToken));
     }
-  }, [section.id, youtubeQuery.data, paginatedSongs.length]);
+  }, [isQuickPicks, youtubeQuery.data, paginatedSongs.length]);
 
   const loadMoreTracks = useCallback(async () => {
     if (isFetchingRef.current || !hasMoreRef.current) return;
 
-    if (section.id === "quick-picks") {
+    if (isQuickPicks) {
       isFetchingRef.current = true;
       setIsFetchingMore(true);
       try {
         const nextPage = quickPicksPageRef.current + 1;
-        const newTracks = await fetchExpandedUserQuickPicks(nextPage, 20);
+        const currentIds = paginatedSongsRef.current.map((s) => s.id);
+        const newTracks = await fetchExpandedUserQuickPicks(nextPage, 15, currentIds);
         if (newTracks.length > 0) {
           setPaginatedSongs((prev) => {
             const seen = new Set(prev.map((s) => s.id));
@@ -317,7 +334,7 @@ function SectionDetailsPage() {
             return [...prev, ...fresh];
           });
           setQuickPicksPage(nextPage);
-          setHasMore(newTracks.length >= 10);
+          setHasMore(true);
         } else {
           setHasMore(false);
         }
@@ -375,7 +392,7 @@ function SectionDetailsPage() {
       isFetchingRef.current = false;
       setIsFetchingMore(false);
     }
-  }, [sectionConfig, section.id]);
+  }, [isQuickPicks, sectionConfig, section.id]);
 
   const isMahiSelect =
     section.id === "favourite" ||
@@ -401,8 +418,8 @@ function SectionDetailsPage() {
     },
     enabled:
       isMahiSelect ||
-      (!sectionConfig && section.id !== "quick-picks") ||
-      (sectionConfig?.source === "local" && section.id !== "quick-picks"),
+      (!sectionConfig && !isQuickPicks) ||
+      (sectionConfig?.source === "local" && !isQuickPicks),
     staleTime: 1000 * 60 * 15,
     gcTime: 1000 * 60 * 60,
   });
@@ -411,14 +428,14 @@ function SectionDetailsPage() {
   const youtubeSongs = paginatedSongs.length > 0 ? paginatedSongs : (youtubeQuery.data?.songs ?? []);
 
   const isLoading =
-    section.id === "quick-picks"
+    isQuickPicks
       ? quickPicksQuery.isLoading && paginatedSongs.length === 0
       : sectionConfig?.source === "youtube"
         ? youtubeQuery.isLoading && paginatedSongs.length === 0
         : songsQuery.isLoading && databaseSongs.length === 0;
 
   const loadError =
-    section.id === "quick-picks"
+    isQuickPicks
       ? quickPicksQuery.error instanceof Error
         ? quickPicksQuery.error.message
         : ""
@@ -510,7 +527,7 @@ function SectionDetailsPage() {
       return databaseSongs.map((song) => databaseSongToPlayerSong(song));
     }
 
-    if (sectionId === "quick-picks") {
+    if (isQuickPicks) {
       if (paginatedSongs.length > 0) return paginatedSongs;
       return quickPicksQuery.data ?? [];
     }
@@ -543,7 +560,7 @@ function SectionDetailsPage() {
   const queueSource = useMemo(
     () => ({
       type:
-        section.id === "quick-picks"
+        isQuickPicks
           ? ("favourite" as const)
           : section.id === "trending"
             ? ("trending" as const)
@@ -553,7 +570,7 @@ function SectionDetailsPage() {
       id: isMahiSelect ? "mahi-select" : section.id,
       title: isMahiSelect ? "Mahi Select" : section.title,
     }),
-    [isMahiSelect, section.id, section.title],
+    [isMahiSelect, isQuickPicks, section.id, section.title],
   );
 
   const navigationSource = useMemo(
@@ -575,7 +592,7 @@ function SectionDetailsPage() {
   );
 
   const featuredSongs = useMemo(() => {
-    if (section.id === "recently-played" || section.id === "quick-picks") return [];
+    if (section.id === "recently-played" || isQuickPicks) return [];
     return getFeaturedSongsForSection(section.id, songs, allCatalogueSongs, trendingIds, 5);
   }, [section.id, songs, allCatalogueSongs, trendingIds]);
 
@@ -1427,7 +1444,7 @@ function SectionDetailsPage() {
               )}
 
               {/* Manual "Load More Songs" Glassmorphic Pagination */}
-              {(sectionConfig?.source === "youtube" || section.id === "quick-picks") && (
+              {(sectionConfig?.source === "youtube" || isQuickPicks) && (
                 <div className="py-10 flex flex-col items-center justify-center">
                   {hasMore ? (
                     <div className="flex flex-col items-center gap-2">

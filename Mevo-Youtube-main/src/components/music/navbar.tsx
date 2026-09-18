@@ -22,6 +22,7 @@ import {
 import { LiveSearch } from "./live-search";
 import { useSettings } from "@/context/SettingsContext";
 import { useTranslation } from "@/hooks/useTranslation";
+import { cn } from "@/lib/utils";
 
 const mainNav = [
   { to: "/", key: "nav.home", defaultLabel: "Home", Icon: Home, exact: true },

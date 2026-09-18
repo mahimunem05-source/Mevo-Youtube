@@ -19,6 +19,8 @@ export const SyncedLyricsVisualizer = memo(function SyncedLyricsVisualizer({
   const activeLineRef = useRef<HTMLDivElement>(null);
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const userScrollTimeoutRef = useRef<number | null>(null);
+  const isProgrammaticScrollRef = useRef(false);
+  const programmaticScrollTimeoutRef = useRef<number | null>(null);
   const lastProgressRef = useRef(currentTime);
 
   // Auto-reset user scrolling if user performs a seek (>1.5s leap in currentTime)
@@ -28,6 +30,18 @@ export const SyncedLyricsVisualizer = memo(function SyncedLyricsVisualizer({
     }
     lastProgressRef.current = currentTime;
   }, [currentTime]);
+
+  // Clean up pending timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (userScrollTimeoutRef.current) {
+        window.clearTimeout(userScrollTimeoutRef.current);
+      }
+      if (programmaticScrollTimeoutRef.current) {
+        window.clearTimeout(programmaticScrollTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const firstLineTime = lines && lines.length > 0 ? lines[0].time : 0;
   // 1. Intro Check: If playback is before first vocal line (- 1.5s lead-in)
@@ -65,25 +79,58 @@ export const SyncedLyricsVisualizer = memo(function SyncedLyricsVisualizer({
 
   // 4. Smooth auto-scroll to keep active line centered without clipping
   useEffect(() => {
-    if (isUserScrolling || isIntro || activeIndex < 0 || !activeLineRef.current || !containerRef.current) {
+    if (isUserScrolling || isIntro || activeIndex < 0) {
       return;
     }
 
-    const container = containerRef.current;
-    const activeEl = activeLineRef.current;
-    const containerHeight = container.clientHeight;
-    const lineOffsetTop = activeEl.offsetTop;
-    const lineHeight = activeEl.offsetHeight;
+    let rafId1: number | null = null;
+    let rafId2: number | null = null;
 
-    const targetScrollTop = lineOffsetTop - containerHeight / 2 + lineHeight / 2;
+    rafId1 = requestAnimationFrame(() => {
+      rafId2 = requestAnimationFrame(() => {
+        const container = containerRef.current;
+        const activeElement = activeLineRef.current;
+        if (!container || !activeElement) return;
 
-    container.scrollTo({
-      top: Math.max(0, targetScrollTop),
-      behavior: "smooth",
+        const containerHeight = container.clientHeight;
+        const activeHeight = activeElement.offsetHeight;
+
+        // Ensure offset calculation is exact relative to container content
+        const activeOffsetTop =
+          activeElement.offsetParent === container
+            ? activeElement.offsetTop
+            : activeElement.getBoundingClientRect().top -
+              container.getBoundingClientRect().top +
+              container.scrollTop;
+
+        const targetScrollTop =
+          activeOffsetTop - containerHeight / 2 + activeHeight / 2;
+
+        isProgrammaticScrollRef.current = true;
+        container.scrollTo({
+          top: Math.max(0, targetScrollTop),
+          behavior: "smooth",
+        });
+
+        if (programmaticScrollTimeoutRef.current) {
+          window.clearTimeout(programmaticScrollTimeoutRef.current);
+        }
+        programmaticScrollTimeoutRef.current = window.setTimeout(() => {
+          isProgrammaticScrollRef.current = false;
+        }, 500);
+      });
     });
+
+    return () => {
+      if (rafId1 !== null) cancelAnimationFrame(rafId1);
+      if (rafId2 !== null) cancelAnimationFrame(rafId2);
+    };
   }, [activeIndex, isUserScrolling, isIntro]);
 
   const handleUserScroll = () => {
+    if (isProgrammaticScrollRef.current) {
+      return;
+    }
     setIsUserScrolling(true);
     if (userScrollTimeoutRef.current) {
       window.clearTimeout(userScrollTimeoutRef.current);
@@ -91,6 +138,11 @@ export const SyncedLyricsVisualizer = memo(function SyncedLyricsVisualizer({
     userScrollTimeoutRef.current = window.setTimeout(() => {
       setIsUserScrolling(false);
     }, 2500);
+  };
+
+  const handleManualScroll = () => {
+    isProgrammaticScrollRef.current = false;
+    handleUserScroll();
   };
 
   const handleLineClick = (time: number) => {
@@ -103,7 +155,13 @@ export const SyncedLyricsVisualizer = memo(function SyncedLyricsVisualizer({
   }
 
   return (
-    <div className={cn("relative flex size-full flex-col overflow-hidden select-none", className)}>
+    <div
+      style={{
+        contain: "paint layout",
+        transform: "translateZ(0)",
+      }}
+      className={cn("relative flex size-full flex-col overflow-hidden select-none", className)}
+    >
       {/* ── INTRO STATE (Before Vocals Drop) ─────────────────────────────────── */}
       {isIntro ? (
         <div className="relative flex size-full flex-col items-center justify-center text-center transition-opacity duration-300 ease-out px-4">
@@ -130,13 +188,22 @@ export const SyncedLyricsVisualizer = memo(function SyncedLyricsVisualizer({
         <div
           ref={containerRef}
           onScroll={handleUserScroll}
+          onWheel={handleManualScroll}
+          onTouchMove={handleManualScroll}
           className={cn(
-            "relative flex size-full flex-col overflow-y-auto px-2 sm:px-4 py-2 no-scrollbar text-center transform-gpu will-change-transform overscroll-contain",
+            "relative flex size-full flex-col overflow-y-auto px-2 sm:px-4 py-2 no-scrollbar text-center transform-gpu will-change-transform overscroll-contain scroll-smooth scroll-py-16",
             "[mask-image:linear-gradient(to_bottom,transparent_0%,black_16%,black_84%,transparent_100%)]",
           )}
+          style={{
+            scrollBehavior: "smooth",
+            scrollPaddingTop: "4rem",
+            scrollPaddingBottom: "4rem",
+            contain: "paint layout",
+            transform: "translateZ(0)",
+          }}
         >
           {/* Dynamic flexible column: spacing between lines prevents any text collisions */}
-          <div className="my-auto flex flex-col gap-3 py-10 w-full max-w-full">
+          <div className="my-auto flex flex-col gap-3 py-16 w-full max-w-full">
             {lines.map((line, idx) => {
               const isActive = idx === activeIndex && !isInstrumentalBreak;
               const isPassed = idx < activeIndex;
