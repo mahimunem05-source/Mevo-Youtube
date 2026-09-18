@@ -18,9 +18,7 @@ import { SongCoverImage } from "./song-cover-image";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useTranslation } from "@/hooks/useTranslation";
 import {
-  searchValidMusicVideos,
   searchValidMusicVideosPaginated,
-  generateRadioQueue,
 } from "@/lib/youtube-radio";
 import {
   cleanYouTubeTitle,

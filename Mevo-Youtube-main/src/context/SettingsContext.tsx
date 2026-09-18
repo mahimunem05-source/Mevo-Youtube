@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { DEFAULT_SETTINGS, type UserSettings, type AppTheme } from "@/types/settings";
+import { createContext, useContext, useEffect, useState } from "react";
+import { DEFAULT_SETTINGS, type UserSettings } from "@/types/settings";
 import { clearListeningHistory as clearServiceListeningHistory } from "@/services/listeningHistoryService";
 import { toast } from "sonner";
 

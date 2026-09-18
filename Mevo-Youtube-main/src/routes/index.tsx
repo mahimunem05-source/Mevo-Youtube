@@ -280,23 +280,10 @@ export function Index() {
     placeholderData: keepPreviousData,
   });
 
-  const [heroLabel, setHeroLabel] = useState("Today's Pick");
-
   const databaseSongs = mahiSelectQuery.data ?? [];
   const heroSettings = heroQuery.data?.settings ?? DEFAULT_HERO_SETTINGS;
   const manualDaySongIds = heroQuery.data?.dayIds ?? [];
   const manualNightSongIds = heroQuery.data?.nightIds ?? [];
-
-  // Update Hero Period label periodically
-  useEffect(() => {
-    const updateLabel = () => {
-      const periodInfo = getCurrentHeroPeriod(heroSettings);
-      setHeroLabel(periodInfo.label);
-    };
-    updateLabel();
-    const interval = setInterval(updateLabel, 60000);
-    return () => clearInterval(interval);
-  }, [heroSettings]);
 
   // Realtime Supabase Channel -> marks caches as stale safely
   useEffect(() => {

@@ -19,7 +19,7 @@ import { usePlayer } from "@/lib/player-context";
 import { useNavigationHistory } from "@/lib/navigation-history";
 import { useSettings } from "@/context/SettingsContext";
 import { SeekBar } from "./seek-bar";
-import { useState, useCallback, useMemo, useEffect, memo } from "react";
+import { useState, useCallback, useEffect, memo } from "react";
 import { cn } from "@/lib/utils";
 import { DEFAULT_COVER, isYouTubeSong } from "@/data/songs";
 import { getCachedCatalogue } from "@/lib/music-library";

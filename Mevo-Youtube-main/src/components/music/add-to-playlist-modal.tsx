@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, FolderPlus, Music2, Plus, Search, X } from "lucide-react";
+import { Check, Music2, Plus, Search, X } from "lucide-react";
 import { usePlaylists, getPlaylistDisplayCover } from "@/context/PlaylistContext";
 import { SongCoverImage } from "./song-cover-image";
 import { cn } from "@/lib/utils";

@@ -10,7 +10,6 @@ import {
   Shuffle,
   Heart,
   EllipsisVertical,
-  ChevronRight,
   ChevronDown,
   Plus,
   TrendingUp,
@@ -35,12 +34,10 @@ import {
 } from "@/data/songs";
 import {
   getSongs,
-  getTrendingSongs,
   type Song as DatabaseSong,
-  type TrendingSong as DatabaseTrendingSong,
 } from "@/services/songService";
 import { databaseSongToPlayerSong } from "@/lib/song-adapter";
-import { getMostPlayedSongs, getRankedPlayedSongs } from "@/services/listeningHistoryService";
+import { getRankedPlayedSongs } from "@/services/listeningHistoryService";
 import { supabase } from "@/lib/supabase";
 import { subscribeToRealtimeChanges } from "@/lib/realtime-helper";
 import { usePlayer } from "@/lib/player-context";
@@ -55,13 +52,11 @@ import {
 import { AppBackButton } from "@/components/music/app-back-button";
 import { shareContent } from "@/lib/share";
 import { Equalizer } from "@/components/music/equalizer";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 import { HOME_SECTIONS, type SectionConfig } from "@/lib/category-config";
 import {
   fetchYouTubeTrending,
-  fetchYouTubeCategoryTracks,
   fetchPaginatedYouTubeCategoryTracks,
 } from "@/services/youtube";
 import {
@@ -453,7 +448,6 @@ function SectionDetailsPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [infoModalSong, setInfoModalSong] = useState<PlayerSong | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
 
   // Load section favorite status from localStorage
   useEffect(() => {
@@ -512,13 +506,7 @@ function SectionDetailsPage() {
     return getRankedPlayedSongs(allCatalogueSongs, player.recent, 100);
   }, [section.id, allCatalogueSongs, player.recent, player.current?.id]);
 
-  const playCountsMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of rankedPlayedItems) {
-      map.set(item.song.id, item.count);
-    }
-    return map;
-  }, [rankedPlayedItems]);
+
 
   const songs = useMemo<PlayerSong[]>(() => {
     const sectionId = section.id;
@@ -1216,7 +1204,6 @@ function SectionDetailsPage() {
                     const isCurrent = player.current?.id === song.id;
                     const isPlaying = isCurrent && player.isPlaying;
                     const menuOpen = openMenuId === song.id;
-                    const playCount = playCountsMap.get(song.id);
                     const serialRank = index + 1;
                     const trackNumber = String(serialRank).padStart(2, "0");
 

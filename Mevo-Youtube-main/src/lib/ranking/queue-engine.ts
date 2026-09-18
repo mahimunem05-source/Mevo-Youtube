@@ -126,7 +126,7 @@ export interface UniversalSmartQueueResult {
 export function createUniversalSmartQueue(
   params: UniversalSmartQueueParams,
 ): UniversalSmartQueueResult {
-  const { currentTrack, contextSongs, catalogue, queueSource, navigationSource, now } = params;
+  const { currentTrack, contextSongs, queueSource, navigationSource, now } = params;
 
   // Deduplicate context songs
   const seenIds = new Set<string>();

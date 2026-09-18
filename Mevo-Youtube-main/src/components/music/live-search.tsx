@@ -12,7 +12,7 @@ import { useNavigationHistory } from "@/lib/navigation-history";
 import { useTranslation } from "@/hooks/useTranslation";
 import { cn } from "@/lib/utils";
 import { SongCoverImage } from "@/components/music/song-cover-image";
-import { searchYouTube, searchYouTubePaginated, type YouTubeSearchResult } from "@/services/youtube";
+import { searchYouTubePaginated, type YouTubeSearchResult } from "@/services/youtube";
 import {
   detectTrackCategory,
   youTubeResultToSong,

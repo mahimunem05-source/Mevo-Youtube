@@ -268,33 +268,9 @@ function normalizeReleaseDate(value: string | null | undefined): string | null {
   return trimmedValue;
 }
 
-function sanitizeFileName(fileName: string): string {
-  const nameWithoutExtension = fileName.replace(/\.[^/.]+$/, "");
 
-  return (
-    nameWithoutExtension
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "file"
-  );
-}
 
-function getFileExtension(fileName: string): string {
-  return fileName.split(".").pop()?.toLowerCase() || "bin";
-}
 
-function createStoragePath(file: File): string {
-  const dateFolder = new Date().toISOString().slice(0, 10);
-  const uniqueId =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const safeName = sanitizeFileName(file.name);
-  const extension = getFileExtension(file.name);
-
-  return `${dateFolder}/${uniqueId}-${safeName}.${extension}`;
-}
 
 function validateAudioFile(file: File): void {
   if (!(file instanceof File)) {

@@ -6,7 +6,6 @@ import {
   type HomeHeroSongRecord,
 } from "@/types/hero";
 import type { Song as PlayerSong } from "@/data/songs";
-import { databaseSongToPlayerSong } from "@/lib/song-adapter";
 
 const SETTINGS_STORAGE_KEY = "mevo-hero-settings-cache";
 const DAY_SONGS_STORAGE_KEY = "mevo-hero-day-songs-cache";

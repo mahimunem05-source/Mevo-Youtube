@@ -1,4 +1,4 @@
-import { createFileRoute, notFound, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -13,7 +13,6 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
-  X,
   Volume2,
   Volume1,
   VolumeX,

@@ -6,7 +6,6 @@
 
 import type { SectionId, Song } from "@/data/songs";
 import { normalizeYouTubeSong, type YouTubeSearchResult } from "@/services/youtube";
-import { getYouTubeStreamUrl } from "@/lib/extractor";
 import { playbackEvents } from "@/lib/playback-events";
 
 const PREPENDED_SECTIONS_STORAGE_KEY = "mevo_user_prepended_sections";

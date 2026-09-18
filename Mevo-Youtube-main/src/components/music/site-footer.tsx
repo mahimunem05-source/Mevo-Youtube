@@ -19,10 +19,7 @@ const INSTAGRAM_URL = "https://www.instagram.com/_munem_mahi_/";
 const FACEBOOK_URL =
   "https://www.facebook.com/munem.mahi.9/about/?fb_profile_edit_entry_point=%7B%22click_point%22%3A%22edit_profile_button%22%2C%22feature%22%3A%22profile_header%22%7D&id=100063052907505&sk=about";
 
-const socialLinks = [
-  { name: "Instagram", href: INSTAGRAM_URL },
-  { name: "Facebook", href: FACEBOOK_URL },
-] as const;
+
 
 const navLinks = [
   { label: "Contact", to: "/contact" },

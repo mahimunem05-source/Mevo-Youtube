@@ -21,8 +21,7 @@
 
 import type { Song, SectionId } from "@/data/songs";
 import type { UnifiedSong } from "@/lib/music-fetcher";
-import { getYouTubeStreamUrl, getExtractorBaseUrl } from "@/lib/extractor";
-import { parseDurationToSeconds } from "@/lib/music-fetcher";
+import { getExtractorBaseUrl } from "@/lib/extractor";
 import {
   isMusicContent,
   cleanYouTubeTitle,
@@ -30,9 +29,8 @@ import {
   getOfficialContentScore,
   deduplicateYouTubeTracks,
   deduplicateCoreSongVariations,
-  type MevoNormalizedSong,
 } from "@/services/youtube";
-import { detectCulturalAffinity, type CulturalCategory } from "@/lib/user-taste";
+import { detectCulturalAffinity } from "@/lib/user-taste";
 
 const AFFINITY_STORAGE_KEY = "mevo_listening_profile";
 const NEGATIVE_SEARCH_FILTER =

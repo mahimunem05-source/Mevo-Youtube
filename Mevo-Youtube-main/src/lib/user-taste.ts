@@ -17,7 +17,6 @@ import {
   extractCoreSongRoot,
   isSameCoreSong,
 } from "@/services/youtube";
-import { playbackEvents } from "@/lib/playback-events";
 import { prependTrackToSection, mergePrependedTracks } from "@/lib/category-matcher";
 
 // ---------------------------------------------------------------------------
@@ -29,7 +28,6 @@ const LEGACY_QUICK_PICKS_KEY = "mevo_user_quick_picks";
 
 // Half-life of 7 days for exponential decay (lambda = ln(2) / (7 * 24 hours))
 const DECAY_LAMBDA_HOURLY = 0.693147 / (7 * 24);
-const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
 const MAX_SEARCH_HISTORY = 10;
 const MAX_RECENT_HISTORY = 30;
 

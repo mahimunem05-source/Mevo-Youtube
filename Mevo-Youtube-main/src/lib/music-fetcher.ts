@@ -53,12 +53,7 @@ export function parseDurationToSeconds(durationStr: string): number {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-function formatDurationSeconds(seconds: number): string {
-  if (!seconds || seconds <= 0) return 'YouTube';
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
+
 
 /**
  * Searches YouTube for music tracks with strict 1 to 8 minutes duration verification via Video Details.

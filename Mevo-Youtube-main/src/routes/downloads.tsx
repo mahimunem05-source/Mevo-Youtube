@@ -8,9 +8,7 @@ import {
   Pause,
   Trash2,
   HardDrive,
-  Music2,
   ArrowUpDown,
-  EllipsisVertical,
 } from "lucide-react";
 import { useDownloads } from "@/hooks/useDownloads";
 import { usePlayer } from "@/lib/player-context";

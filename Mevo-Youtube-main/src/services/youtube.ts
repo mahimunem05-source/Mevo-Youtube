@@ -9,7 +9,6 @@ import {
   filterAndRankSectionTracks,
   isShortsVideo,
   isAcceptableCatalogTrack,
-  validateSectionEligibility,
   isPlayableTrack,
   isBengaliTrack,
   isCuratedStudioBengaliTrack,
@@ -17,7 +16,7 @@ import {
   validateEnglishEssenceTrack,
   validateSonicWorldTrack,
 } from "../lib/youtube-discovery.ts";
-import { getFromApiCache, setInApiCache, API_CACHE_TTL } from "./apiCacheService.ts";
+import { getFromApiCache, setInApiCache } from "./apiCacheService.ts";
 import { rankSearchResults } from "./searchRanker.ts";
 
 export interface YouTubeSearchResult {
@@ -1174,45 +1173,9 @@ export function youTubeVideoToPlayerSong(
   return normalizeYouTubeSong(video, sectionId, categoryTitle, options);
 }
 
-interface YouTubeApiItem {
-  id: string | { kind?: string; videoId?: string };
-  snippet?: {
-    title: string;
-    description: string;
-    channelTitle: string;
-    publishedAt: string;
-    categoryId?: string;
-    thumbnails: {
-      default?: { url: string };
-      medium?: { url: string };
-      high?: { url: string };
-      standard?: { url: string };
-      maxres?: { url: string };
-    };
-  };
-  contentDetails?: {
-    duration?: string;
-  };
-  statistics?: {
-    viewCount?: string;
-    likeCount?: string;
-  };
-  status?: {
-    madeForKids?: boolean;
-    selfDeclaredMadeForKids?: boolean;
-  };
-}
 
-interface YouTubeApiResponse {
-  items?: YouTubeApiItem[];
-  nextPageToken?: string;
-  prevPageToken?: string;
-  error?: {
-    code: number;
-    message: string;
-    errors?: Array<{ message: string; reason: string }>;
-  };
-}
+
+
 
 /**
  * Fallback to local Python Flask Extractor search endpoint

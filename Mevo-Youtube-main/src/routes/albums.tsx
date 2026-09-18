@@ -10,10 +10,6 @@ import {
   Sparkles,
   Disc,
   Plus,
-  FolderPlus,
-  Pencil,
-  Trash2,
-  Music2,
 } from "lucide-react";
 
 import { belongsToSection, type SectionId } from "@/data/songs";
@@ -21,7 +17,7 @@ import { useMusicLibrary } from "@/hooks/useMusicLibrary";
 import { formatAlbumDuration, type AlbumGroup } from "@/lib/collection-utils";
 import { PageHeader } from "@/components/music/page-header";
 import { usePlayer } from "@/lib/player-context";
-import { usePlaylists, getPlaylistDisplayCover, type UserPlaylist } from "@/context/PlaylistContext";
+import { usePlaylists, getPlaylistDisplayCover } from "@/context/PlaylistContext";
 import { SongCoverImage } from "@/components/music/song-cover-image";
 
 export const Route = createFileRoute("/albums")({
@@ -65,7 +61,7 @@ const ALBUM_FILTERS: AlbumFilter[] = [
 
 function AlbumsPage() {
   const player = usePlayer();
-  const { playlists, openCreatePlaylistModal, deletePlaylist } = usePlaylists();
+  const { playlists, openCreatePlaylistModal } = usePlaylists();
   const [activeFilter, setActiveFilter] = useState("All Albums");
   const { albums, isLoading, error: loadError } = useMusicLibrary();
 

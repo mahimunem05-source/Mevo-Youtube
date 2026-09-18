@@ -12,7 +12,6 @@ export function CreatePlaylistModal() {
     updatePlaylist,
     editingPlaylist,
     pendingTrackForNewPlaylist,
-    addTrackToPlaylist,
   } = usePlaylists();
 
   const [name, setName] = useState("");
@@ -69,7 +68,7 @@ export function CreatePlaylistModal() {
         coverUrl: coverUrl.trim() || null,
       });
     } else {
-      const created = createPlaylist({
+      createPlaylist({
         name: trimmedName,
         description: description.trim(),
         coverUrl: coverUrl.trim() || null,

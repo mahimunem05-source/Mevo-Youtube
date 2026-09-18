@@ -10,7 +10,6 @@ import type { Song } from "@/data/songs";
 import { recordTrackLiked } from "@/lib/user-taste";
 import { slugify } from "@/lib/collection-utils";
 import { toast } from "sonner";
-import { supabase } from "@/lib/supabase";
 
 export interface UserPlaylist {
   id: string;
@@ -105,7 +104,7 @@ const PlaylistContext = createContext<PlaylistContextType | null>(null);
 
 export function PlaylistProvider({ children }: { children: React.ReactNode }) {
   const [playlists, setPlaylists] = useState<UserPlaylist[]>(() => readStoredPlaylists());
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading] = useState(false);
 
   // Modal states
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState<Song | null>(null);

@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Music4, Shield, Heart, Zap, Globe, Github } from "lucide-react";
+import { Music4, Shield, Zap } from "lucide-react";
 import { PageHeader } from "@/components/music/page-header";
 
 export const Route = createFileRoute("/about")({

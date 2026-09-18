@@ -1,5 +1,4 @@
-import { useEffect, useRef, memo } from "react";
-import { motion } from "motion/react";
+import { useRef, memo } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import type { DisplaySection, NavigationSource, QueueSource, Song } from "@/data/songs";

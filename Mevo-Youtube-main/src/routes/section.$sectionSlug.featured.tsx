@@ -27,7 +27,6 @@ import {
   getSongs,
   getTrendingSongs,
   type Song as DatabaseSong,
-  type TrendingSong as DatabaseTrendingSong,
 } from "@/services/songService";
 import { databaseSongToPlayerSong } from "@/lib/song-adapter";
 import { getRankedPlayedSongs } from "@/services/listeningHistoryService";
@@ -339,7 +338,6 @@ function SectionFeaturedPage() {
           !isLoading && (
             <div className="rounded-3xl border border-white/[0.08] bg-[#12191D]/90 p-2 sm:p-3 shadow-xl space-y-1">
               {featuredSongs.map((song, index) => {
-                const trackNumber = String(index + 1).padStart(2, "0");
                 const isCurrent = player.current?.id === song.id;
                 const isPlaying = isCurrent && player.isPlaying;
                 const menuOpen = openMenuId === song.id;

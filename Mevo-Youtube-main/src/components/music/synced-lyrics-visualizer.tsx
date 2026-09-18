@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Music2 } from "lucide-react";
 import { usePlayer, usePlayerProgress } from "@/lib/player-context";
 import type { LyricLine } from "@/services/lyricsService";

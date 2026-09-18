@@ -22,12 +22,11 @@ import { subscribeToRealtimeChanges } from "@/lib/realtime-helper";
 import { databaseSongToPlayerSong, mergePlayerSongs } from "@/lib/song-adapter";
 import { playbackEvents } from "@/lib/playback-events";
 import { startEngagementTracking } from "@/lib/ranking/engagement-tracker";
-import { createUniversalSmartQueue, generateDiscoveryQueue } from "@/lib/ranking/queue-engine";
+import { createUniversalSmartQueue } from "@/lib/ranking/queue-engine";
 import { useSettings } from "@/context/SettingsContext";
 import { getYouTubeStreamUrl, extractYouTubeVideoId, resolveAudioStreamUrl } from "@/lib/extractor";
 import { getDeviceId } from "@/utils/device";
 import { youtubePlayerBridge } from "@/lib/youtube-player-bridge";
-import { getRelatedTracks } from "@/lib/youtube-api";
 import {
   recordPlayAffinity,
   generateRadioQueue,
@@ -38,8 +37,6 @@ import {
   recordTrackProgress,
   recordTrackCompleted,
   recordTrackSkipped,
-  getLastPlayedTrack,
-  setLastPlayedTrack,
   getUserTasteGraph,
 } from "@/lib/user-taste";
 
@@ -418,7 +415,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const pendingRestoreRef = useRef<StoredPlaybackSession | null>(null);
-  const loadTokenRef = useRef(0);
   const shufflePlayedIdsRef = useRef<Set<string>>(new Set());
   const lastTimeEventRef = useRef(0);
   const trackListenedSecondsRef = useRef(0);
@@ -743,8 +739,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
     }
   }, []);
-
-  const executePlay = safePlay;
 
   // Synchronously load and initiate playback on HTMLAudioElement within gesture stack
   const startAudioPlayback = useCallback(

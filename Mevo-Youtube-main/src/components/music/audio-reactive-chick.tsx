@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { getLiveMultiBandLevels } from "@/lib/multi-band-audio";
 import { isUserFastScrolling } from "@/lib/scroll-performance";
 import { cn } from "@/lib/utils";

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Heart, LoaderCircle, Music2, Play, Shuffle } from "lucide-react";
+import { Heart, LoaderCircle, Play, Shuffle } from "lucide-react";
 import { usePlayer } from "@/lib/player-context";
-import { getSongs, type Song as DatabaseSong } from "@/services/songService";
+import { getSongs } from "@/services/songService";
 import { databaseSongToPlayerSong } from "@/lib/song-adapter";
 import { SongCard } from "@/components/music/song-card";
 import { PageHeader } from "@/components/music/page-header";

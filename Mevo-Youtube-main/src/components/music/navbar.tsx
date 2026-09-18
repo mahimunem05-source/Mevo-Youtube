@@ -17,7 +17,6 @@ import {
   Settings,
   Info,
   ChevronDown,
-  EllipsisVertical,
 } from "lucide-react";
 import { LiveSearch } from "./live-search";
 import { useSettings } from "@/context/SettingsContext";

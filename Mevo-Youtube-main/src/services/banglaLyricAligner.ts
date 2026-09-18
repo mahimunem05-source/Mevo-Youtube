@@ -608,11 +608,6 @@ export async function alignBanglaSongLyrics(
     // If the playing audio is Slowed/Sped-Up/Remix/Cover:
     // DO NOT blindly reuse studio original timestamps!
     const isTempoVariant = versionTag === "slowed_reverb" || versionTag === "sped_up";
-    const isStructuralVariant =
-      versionTag === "remix" ||
-      versionTag === "live" ||
-      versionTag === "cover" ||
-      versionTag === "mashup";
 
     let finalLines: LyricLine[] = [];
     let confidence: AlignmentConfidence = "unverified";

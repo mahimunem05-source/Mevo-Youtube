@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Sparkles, Activity, Mic2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import type { Song } from "@/data/songs";

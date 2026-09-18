@@ -18,8 +18,6 @@ import {
 import {
   getTrendingSongs,
   getSongs,
-  type TrendingSong as DatabaseTrendingSong,
-  type Song as DatabaseSong,
 } from "@/services/songService";
 import { databaseSongToPlayerSong } from "@/lib/song-adapter";
 import { subscribeToRealtimeChanges } from "@/lib/realtime-helper";

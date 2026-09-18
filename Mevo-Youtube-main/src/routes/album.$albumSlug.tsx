@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { LoaderCircle, Pencil, Trash2, FolderPlus, Plus } from "lucide-react";
+import { LoaderCircle, Pencil, Trash2, FolderPlus } from "lucide-react";
 import { useMusicLibrary } from "@/hooks/useMusicLibrary";
 import { usePlayer } from "@/lib/player-context";
 import { usePlaylists, getPlaylistDisplayCover } from "@/context/PlaylistContext";
@@ -8,7 +8,6 @@ import { formatAlbumDuration, shuffleArray, sumDuration } from "@/lib/collection
 import { CollectionHeader } from "@/components/music/collection-header";
 import { SongList } from "@/components/music/song-list";
 import { AppBackButton } from "@/components/music/app-back-button";
-import { toast } from "sonner";
 import { SongListRow } from "@/components/music/song-list-row";
 
 export const Route = createFileRoute("/album/$albumSlug")({

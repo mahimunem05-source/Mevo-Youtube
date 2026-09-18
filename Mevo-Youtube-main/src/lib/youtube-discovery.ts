@@ -4,8 +4,7 @@
  * playability checks, and a balanced freshness + current popularity ranking model.
  */
 
-import type { SectionId, Song } from "../data/songs.ts";
-import { getOfficialContentScore } from "../services/youtube.ts";
+
 
 // ---------------------------------------------------------------------------
 // 1. Language & Section Content Classification

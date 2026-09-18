@@ -50,11 +50,9 @@ export function calculateFeedTrackScore(
   // 2. Freshness / New Release Boost: +30 pts if uploaded within the last 72 hours
   const dateString = track.created_at || track.release_date;
   let isNewRelease = false;
-  let createdAtTimestamp = 0;
   if (dateString) {
     const timestamp = Date.parse(dateString);
     if (!Number.isNaN(timestamp)) {
-      createdAtTimestamp = timestamp;
       if (now - timestamp <= SEVENTY_TWO_HOURS_MS && now >= timestamp) {
         isNewRelease = true;
       }
